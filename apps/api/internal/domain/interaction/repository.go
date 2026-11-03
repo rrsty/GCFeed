@@ -1,6 +1,9 @@
 package domaininteraction
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository 定义互动领域需要的持久化能力。
 type Repository interface {
@@ -10,8 +13,10 @@ type Repository interface {
 	GetVideoAuthorID(ctx context.Context, videoID int64) (int64, error)
 	// GetUserProfile 读取触发互动的用户展示资料。
 	GetUserProfile(ctx context.Context, userID int64) (*UserProfile, error)
-	// SetAction 设置点赞或收藏状态，并返回最新统计值。
-	SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string) (*Action, int, int, error)
+	// GetAction 读取用户对指定视频的行为状态（点赞/收藏），用于缓存缺失时的状态回源。
+	GetAction(ctx context.Context, userID int64, videoID int64, actionType string) (*Action, error)
+	// SetAction 设置点赞或收藏状态，并返回最新统计值。可选传入 occurredAt 实现乱序消费版本保护。
+	SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, occurredAt ...time.Time) (*Action, int, int, error)
 	// CreateComment 创建评论并返回视频最新评论数。
 	CreateComment(ctx context.Context, comment *Comment) (*Comment, int, int, error)
 	// FindCommentByUserAndIdempotencyKey 用于评论创建接口的幂等重放。

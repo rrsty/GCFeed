@@ -416,6 +416,8 @@ function FeedPage({ feedScene, session, onNavigate }) {
   const swipeRef = useRef(null);
   const loadingMoreRef = useRef(false);
   const feedRequestIDRef = useRef("");
+  const feedSceneRef = useRef(feedScene);
+  feedSceneRef.current = feedScene;
   const exposedRef = useRef(new Set());
   const preloadedVideoRef = useRef(new Set());
   const currentFeedScene = FEED_SCENES.find((scene) => scene.key === feedScene) || FEED_SCENES[0];
@@ -486,11 +488,16 @@ function FeedPage({ feedScene, session, onNavigate }) {
       return;
     }
 
+    const targetScene = feedScene;
     const requestID = feedRequestIDRef.current || feedRequestID || createFeedRequestID(feedScene);
     loadingMoreRef.current = true;
     setLoadingMore(true);
     fetchFeedPage(feedScene, session.token, nextCursor, requestID)
       .then((data) => {
+        // 场景隔离：若响应返回前用户切换了 Feed 场景，丢弃返回数据避免内容串场
+        if (feedSceneRef.current !== targetScene) {
+          return;
+        }
         const nextItems = (data.items || []).map((item) => mapFeedItem(item, feedScene, requestID));
         setItems((state) => appendFeedItems(state, nextItems));
         mergeViewerActions(nextItems, setLiked, "liked");
@@ -499,14 +506,19 @@ function FeedPage({ feedScene, session, onNavigate }) {
         setHasMore(Boolean(data.has_more && data.next_cursor));
       })
       .catch((error) => {
+        if (feedSceneRef.current !== targetScene) {
+          return;
+        }
         if (error.status === 401 && requiresAuthFeed(feedScene)) {
           session.clearAuth();
           onNavigate("/auth");
         }
       })
       .finally(() => {
-        loadingMoreRef.current = false;
-        setLoadingMore(false);
+        if (feedSceneRef.current === targetScene) {
+          loadingMoreRef.current = false;
+          setLoadingMore(false);
+        }
       });
   }, [feedRequestID, feedScene, feedState, hasMore, nextCursor, onNavigate, session]);
 

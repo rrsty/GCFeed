@@ -39,6 +39,8 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -113,6 +115,9 @@ func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
 	messageWriter := NewMessageWriter(messageService)
 	interactionOptions = append(interactionOptions, applicationinteraction.WithMessageWriter(messageWriter))
 	relationOptions := []applicationrelation.Option{applicationrelation.WithMessageWriter(messageWriter)}
+	if feedCache != nil {
+		videoOptions = append(videoOptions, applicationvideo.WithCacheInvalidator(feedCache))
+	}
 	videoService := applicationvideo.New(videoRepo, videoOptions...)
 	videoHandler := interfaceshttpvideo.New(videoService)
 	interactionService := applicationinteraction.New(interactionRepo, interactionOptions...)
@@ -130,12 +135,21 @@ func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
 
 	g.GET("/health", HealthCheck)
 	g.GET("/metrics", gin.WrapH(promhttp.Handler()))
-	// 静态文件路由让上传后的文件可以通过 /uploads/... 访问。
-	g.Static("/uploads", "./uploads")
+	// 静态文件路由让上传后的文件可以通过 /uploads/... 访问，设置安全响应头并禁止目录列表浏览。
+	uploadsStatic := g.Group("/uploads", func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Content-Security-Policy", "default-src 'none'; media-src 'self'; img-src 'self'")
+		if strings.HasSuffix(c.Request.URL.Path, "/") || c.Request.URL.Path == "/uploads" {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.Next()
+	})
+	uploadsStatic.Static("", "./uploads")
 
-	authMiddleware := interfaceshttpmiddleware.NewJWTAuth(jwtManager)
-	optionalAuthMiddleware := interfaceshttpmiddleware.NewOptionalJWTAuth(jwtManager)
-	api := g.Group("/api")
+	authMiddleware := interfaceshttpmiddleware.NewJWTAuth(jwtManager)//强制登录
+	optionalAuthMiddleware := interfaceshttpmiddleware.NewOptionalJWTAuth(jwtManager)//可选登录 两个中间件都由JWTManager提供token校验功能，区别在于前者会拒绝未登录请求，后者会允许未登录请求但不会提供用户信息
+	api := g.Group("/api")//路由分组
 
 	// RESTful 路由约定：路径表达资源，HTTP 方法表达动作。
 	// 会话资源用于登录态：创建会话表示登录，删除当前会话表示登出。
@@ -145,28 +159,28 @@ func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
 
 	// 用户资源承载注册、当前用户资料和用户作品列表。
 	users := api.Group("/users")
-	users.POST("", accountHandler.Register)
-	users.GET("/me", authMiddleware, accountHandler.Me)
-	users.PATCH("/me", authMiddleware, accountHandler.UpdateMe)
-	users.GET("/me/videos", authMiddleware, videoHandler.ListMine)
-	users.PUT("/me/following/:targetUserId", authMiddleware, relationHandler.Follow)
-	users.DELETE("/me/following/:targetUserId", authMiddleware, relationHandler.Unfollow)
-	users.GET("/me/following", authMiddleware, relationHandler.ListFollowing)
-	users.GET("/me/followers", authMiddleware, relationHandler.ListFollowers)
-	users.GET("/:userId", accountHandler.Get)
-	users.GET("/:userId/videos", videoHandler.ListByAuthor)
+	users.POST("", accountHandler.Register)//注册
+	users.GET("/me", authMiddleware, accountHandler.Me)//我的资料
+	users.PATCH("/me", authMiddleware, accountHandler.UpdateMe)//修改我的资料
+	users.GET("/me/videos", authMiddleware, videoHandler.ListMine)//我发布的视频
+	users.PUT("/me/following/:targetUserId", authMiddleware, relationHandler.Follow)//关注用户
+	users.DELETE("/me/following/:targetUserId", authMiddleware, relationHandler.Unfollow)//取消关注用户
+	users.GET("/me/following", authMiddleware, relationHandler.ListFollowing)//我关注的用户
+	users.GET("/me/followers", authMiddleware, relationHandler.ListFollowers)//关注我的用户
+	users.GET("/:userId", accountHandler.Get)//获取指定用户资料
+	users.GET("/:userId/videos", videoHandler.ListByAuthor)//获取指定用户发布的视频
 
 	// 视频是互动资源的父资源，点赞、收藏和评论都挂在具体视频下。
 	videos := api.Group("/videos")
-	videos.POST("", authMiddleware, videoHandler.Create)
-	videos.GET("/:videoId", videoHandler.Get)
-	videos.DELETE("/:videoId", authMiddleware, videoHandler.Delete)
-	videos.PUT("/:videoId/like", authMiddleware, interactionHandler.Like)
-	videos.DELETE("/:videoId/like", authMiddleware, interactionHandler.Unlike)
-	videos.PUT("/:videoId/favorite", authMiddleware, interactionHandler.Favorite)
-	videos.DELETE("/:videoId/favorite", authMiddleware, interactionHandler.Unfavorite)
-	videos.POST("/:videoId/comments", authMiddleware, interactionHandler.CreateComment)
-	videos.GET("/:videoId/comments", interactionHandler.ListComments)
+	videos.POST("", authMiddleware, videoHandler.Create)//创建视频
+	videos.GET("/:videoId", videoHandler.Get)//获取视频详情
+	videos.DELETE("/:videoId", authMiddleware, videoHandler.Delete)//删除视频
+	videos.PUT("/:videoId/like", authMiddleware, interactionHandler.Like)//点赞视频
+	videos.DELETE("/:videoId/like", authMiddleware, interactionHandler.Unlike)//取消点赞视频
+	videos.PUT("/:videoId/favorite", authMiddleware, interactionHandler.Favorite)//收藏视频
+	videos.DELETE("/:videoId/favorite", authMiddleware, interactionHandler.Unfavorite)//取消收藏视频
+	videos.POST("/:videoId/comments", authMiddleware, interactionHandler.CreateComment)//创建评论
+	videos.GET("/:videoId/comments", interactionHandler.ListComments)//获取评论列表
 
 	uploads := api.Group("/uploads", authMiddleware)
 	uploads.POST("", uploadHandler.Create)
@@ -184,12 +198,13 @@ func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
 	api.GET("/preload-videos", authMiddleware, playbackHandler.ListPreloadVideos)
 	api.POST("/playback-qos-reports", authMiddleware, playbackHandler.CreateQoSReport)
 
-	internal := g.Group("/internal")
+	internalAuth := interfaceshttpmiddleware.NewInternalTokenAuth(cfg.Internal.Token)
+	internal := g.Group("/internal", internalAuth)
 	internal.POST("/recommendation-candidates", recommendationHandler.ListCandidates)
 	internal.POST("/exposure-decisions", recommendationHandler.DecideExposures)
 	internal.POST("/exposures", recommendationHandler.SaveExposures)
-	internal.POST("/messages", interfaceshttpmiddleware.NewInternalTokenAuth(cfg.Internal.Token), messageHandler.Create)
-	internal.POST("/playback-qos-reports", interfaceshttpmiddleware.NewInternalTokenAuth(cfg.Internal.Token), playbackHandler.CreateInternalQoSReport)
+	internal.POST("/messages", messageHandler.Create)
+	internal.POST("/playback-qos-reports", playbackHandler.CreateInternalQoSReport)
 
 	return nil
 }

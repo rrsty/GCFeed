@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -346,6 +348,43 @@ func TestRecommendationExposuresAPI(t *testing.T) {
 		"",
 	)
 	requireStatus(t, missingResponse, http.StatusNotFound)
+}
+
+func TestInternalEndpointsRequireToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	service := applicationrecommendation.New(newMemoryRecommendationRepo())
+	handler := interfaceshttprecommendation.New(service)
+
+	internalAuth := interfaceshttpmiddleware.NewInternalTokenAuth("safe-internal-secret")
+	internal := router.Group("/internal", internalAuth)
+	internal.POST("/recommendation-candidates", handler.ListCandidates)
+	internal.POST("/exposure-decisions", handler.DecideExposures)
+	internal.POST("/exposures", handler.SaveExposures)
+
+	// 1. 未携带 token 调用应被 401 拦截
+	res := performJSONRequest(router, http.MethodPost, "/internal/recommendation-candidates", `{"user_id":42,"scene":"recommend"}`, "")
+	requireStatus(t, res, http.StatusUnauthorized)
+
+	// 2. 携带错误 token 调用应被 401 拦截
+	req, _ := http.NewRequest(http.MethodPost, "/internal/recommendation-candidates", strings.NewReader(`{"user_id":42,"scene":"recommend"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", "wrong-token")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d", w.Code)
+	}
+
+	// 3. 携带正确 token 调用应成功
+	reqCorrect, _ := http.NewRequest(http.MethodPost, "/internal/recommendation-candidates", strings.NewReader(`{"user_id":42,"scene":"recommend"}`))
+	reqCorrect.Header.Set("Content-Type", "application/json")
+	reqCorrect.Header.Set("X-Internal-Token", "safe-internal-secret")
+	wCorrect := httptest.NewRecorder()
+	router.ServeHTTP(wCorrect, reqCorrect)
+	if wCorrect.Code != http.StatusOK {
+		t.Fatalf("expected 200 with correct token, got %d", wCorrect.Code)
+	}
 }
 
 func TestRecommendFeedScene(t *testing.T) {

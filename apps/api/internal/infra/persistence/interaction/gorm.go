@@ -95,8 +95,39 @@ func (r *Repository) GetUserProfile(ctx context.Context, userID int64) (*domaini
 	}, nil
 }
 
+// GetAction 读取用户对指定视频的行为状态（点赞/收藏），供缓存缺失时回源读取。
+func (r *Repository) GetAction(ctx context.Context, userID int64, videoID int64, actionType string) (*domaininteraction.Action, error) {
+	actionType, err := domaininteraction.NormalizeActionType(actionType)
+	if err != nil {
+		return nil, err
+	}
+
+	var model ActionModel
+	err = r.db.WithContext(ctx).
+		Where("user_id = ? AND video_id = ? AND action_type = ?", userID, videoID, actionType).
+		Take(&model).
+		Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, domaininteraction.ErrActionNotFound
+		}
+		return nil, err
+	}
+
+	return &domaininteraction.Action{
+		ID:             model.ID,
+		UserID:         model.UserID,
+		VideoID:        model.VideoID,
+		ActionType:     model.ActionType,
+		Status:         model.Status,
+		IdempotencyKey: idempotencyKeyValue(model.IdempotencyKey),
+		CreatedAt:      model.CreatedAt,
+		UpdatedAt:      model.UpdatedAt,
+	}, nil
+}
+
 // SetAction 写入点赞或收藏状态，并在同一事务内维护视频统计计数。
-func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string) (*domaininteraction.Action, int, int, error) {
+func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, occurredAt ...time.Time) (*domaininteraction.Action, int, int, error) {
 	actionType, err := domaininteraction.NormalizeActionType(actionType)
 	if err != nil {
 		return nil, 0, 0, err
@@ -139,6 +170,16 @@ func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64,
 				delta = 1
 			}
 		} else {
+			// 乱序事件保护：若事件发生时间早于当前记录的更新时间，说明是迟到的旧事件，直接忽略避免覆盖新状态
+			if len(occurredAt) > 0 && !occurredAt[0].IsZero() && !action.UpdatedAt.IsZero() && action.UpdatedAt.After(occurredAt[0]) {
+				currentCount, err := currentActionCount(tx, videoID, actionType)
+				if err != nil {
+					return err
+				}
+				count = currentCount
+				return nil
+			}
+
 			// 同一幂等键直接返回当前计数，避免客户端重试重复变更统计。
 			if idempotencyKey != "" && idempotencyKeyValue(action.IdempotencyKey) == idempotencyKey {
 				currentCount, err := currentActionCount(tx, videoID, actionType)

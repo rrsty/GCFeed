@@ -10,7 +10,7 @@ metadata:
   namespace: gcfeed
 type: Opaque
 stringData:
-  mysql-root-password: sealos123
+  mysql-root-password: "123456"
   api-config.yaml: |
     port: 8080
     jwt:
@@ -21,7 +21,7 @@ stringData:
       host: "mysql"
       port: 3306
       user: "root"
-      password: "sealos123"
+      password: "123456"
       name: "GCFeed"
 
     redis:

@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	applicationembedding "GCFeed/internal/application/embedding"
+	applicationexposure "GCFeed/internal/application/exposure"
 	applicationinteraction "GCFeed/internal/application/interaction"
 	applicationvideo "GCFeed/internal/application/video"
 	infracache "GCFeed/internal/infra/cache"
@@ -79,22 +80,32 @@ func startWorkers(ctx context.Context, cfg *infraconfig.Config, gormDB *gorm.DB,
 	feedCache := infracache.NewFeedCache(redisClient)
 
 	interactionRepo := infrainteraction.New(gormDB)
-	actionWorker := applicationinteraction.NewActionWorker(interactionRepo, rabbitMQ)
+	actionWorker := applicationinteraction.NewActionWorker(interactionRepo, rabbitMQ) //用来处理用户的点赞、评论等操作，并将这些操作发送到消息队列中
 	if err := actionWorker.Start(ctx); err != nil {
 		return err
 	}
 
 	feedRepo := infrafeed.New(gormDB)
 	feedPreheater := applicationvideo.NewFeedPreheater(feedRepo, feedCache)
-	fanoutWorker := applicationvideo.NewFanoutWorker(feedRepo, rabbitMQ, feedCache, feedPreheater)
+	fanoutWorker := applicationvideo.NewFanoutWorker(feedRepo, rabbitMQ, feedCache, feedPreheater) //用来处理视频的分发，将新上传的视频分发给关注该视频的用户，并将这些分发操作发送到消息队列中
 	if err := fanoutWorker.Start(ctx); err != nil {
 		return err
 	}
 
 	embeddingRepo := infraembedding.New(gormDB)
 	embeddingService := applicationembedding.New(embeddingRepo, nil)
-	embeddingWorker := applicationembedding.NewVideoEmbeddingWorker(embeddingService, rabbitMQ)
-	return embeddingWorker.Start(ctx)
+	embeddingWorker := applicationembedding.NewVideoEmbeddingWorker(embeddingService, rabbitMQ) //用来处理视频的嵌入向量计算，将新上传的视频的嵌入向量计算出来，并将这些计算操作发送到消息队列中
+	if err := embeddingWorker.Start(ctx); err != nil {
+		return err
+	}
+
+	// 消费观看行为事件，防止 gcfeed.exposure.view_event_recorded 队列无消费者积压
+	return rabbitMQ.ConsumeViewEventRecorded(ctx, func(c context.Context, event *applicationexposure.ViewEventRecordedEvent) error {
+		if event != nil {
+			inframetrics.ObserveWorkerJob("view_event_recorded_worker", 0, nil)
+		}
+		return nil
+	})
 }
 
 func closeSQL(db *sql.DB) {

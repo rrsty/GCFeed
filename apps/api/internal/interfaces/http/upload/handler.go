@@ -190,6 +190,7 @@ func (h *Handler) Create(c *gin.Context) {
 }
 
 // normalizeKind 规范化文件分类，分类会影响保存目录和访问 URL。
+// 为防御同源主动脚本执行风险，仅允许受限的业务资源类型：video、cover、avatar。
 func normalizeKind(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "video":
@@ -198,10 +199,6 @@ func normalizeKind(raw string) (string, bool) {
 		return "cover", true
 	case "avatar":
 		return "avatar", true
-	case "":
-		return "file", true
-	case "file":
-		return "file", true
 	default:
 		return "", false
 	}
@@ -219,18 +216,11 @@ func validateUploadFile(file *multipart.FileHeader, kind string) (*uploadValidat
 
 	ext := strings.ToLower(filepath.Ext(filepath.Base(file.Filename)))
 	if ext == "" {
-		if kind == "file" {
-			ext = ".bin"
-		} else {
-			return nil, errInvalidUploadExtension
-		}
+		return nil, errInvalidUploadExtension
 	}
 
 	if err := validateUploadExtension(ext, kind); err != nil {
 		return nil, err
-	}
-	if kind == "file" {
-		return &uploadValidation{Ext: ext}, nil
 	}
 
 	mimeType, err := sniffUploadMIME(file)
@@ -440,7 +430,9 @@ func faststartVideo(ctx context.Context, path string) error {
 		"-i",
 		path,
 		"-map",
-		"0",
+		"0:v:0?",
+		"-map",
+		"0:a:0?",
 		"-c",
 		"copy",
 		"-movflags",

@@ -40,6 +40,6 @@ func (w *ActionWorker) HandleActionChanged(ctx context.Context, event *ActionCha
 	if event == nil {
 		return nil
 	}
-	_, _, _, err = w.repo.SetAction(ctx, event.UserID, event.VideoID, event.ActionType, event.Active, event.IdempotencyKey)
+	_, _, _, err = w.repo.SetAction(ctx, event.UserID, event.VideoID, event.ActionType, event.Active, event.IdempotencyKey, event.OccurredAt)
 	return err
 }

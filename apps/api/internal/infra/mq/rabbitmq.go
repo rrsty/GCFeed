@@ -56,6 +56,13 @@ func NewRabbitMQ(cfg infraconfig.RabbitMQConfig) (*RabbitMQ, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	// 配置消费者预取数 QoS，防止积压时单 worker 内存被打爆
+	if err := consumerChannel.Qos(20, 0, false); err != nil {
+		_ = consumerChannel.Close()
+		_ = channel.Close()
+		_ = conn.Close()
+		return nil, err
+	}
 
 	client := &RabbitMQ{
 		conn:            conn,
@@ -184,6 +191,7 @@ func (r *RabbitMQ) ConsumeActionChanged(ctx context.Context, handler func(contex
 			}
 			if err := handler(ctx, &event); err != nil {
 				inframetrics.ObserveWorkerJob("mq_action_changed_consume", time.Since(start), err)
+				time.Sleep(50 * time.Millisecond)
 				_ = delivery.Nack(false, true)
 				continue
 			}
@@ -228,6 +236,7 @@ func (r *RabbitMQ) consumeVideoPublishedQueue(ctx context.Context, queue string,
 			}
 			if err := handler(ctx, &event); err != nil {
 				inframetrics.ObserveWorkerJob("mq_video_published_consume", time.Since(start), err)
+				time.Sleep(50 * time.Millisecond)
 				_ = delivery.Nack(false, true)
 				continue
 			}
@@ -264,6 +273,7 @@ func (r *RabbitMQ) ConsumeViewEventRecorded(ctx context.Context, handler func(co
 			}
 			if err := handler(ctx, &event); err != nil {
 				inframetrics.ObserveWorkerJob("mq_view_event_consume", time.Since(start), err)
+				time.Sleep(50 * time.Millisecond)
 				_ = delivery.Nack(false, true)
 				continue
 			}

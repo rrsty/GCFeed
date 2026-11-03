@@ -26,6 +26,7 @@ type Cursor struct {
 	RankScore   float64
 	PublishedAt time.Time
 	VideoID     int64
+	SessionTime time.Time
 }
 
 type Candidate struct {

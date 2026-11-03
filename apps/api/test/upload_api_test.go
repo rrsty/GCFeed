@@ -78,6 +78,18 @@ func TestUploadValidationRejectsBadFiles(t *testing.T) {
 	badMime := performMultipartUpload(router, "/api/uploads", "cover", "cover.jpg", []byte("plain text"))
 	requireStatus(t, badMime, http.StatusBadRequest)
 
+	// 通用 file 类型已被关闭，必须返回 400
+	badKind := performMultipartUpload(router, "/api/uploads", "file", "test.txt", []byte("hello"))
+	requireStatus(t, badKind, http.StatusBadRequest)
+
+	// 恶意主动内容扩展名必须被拦截
+	badHTML := performMultipartUpload(router, "/api/uploads", "cover", "hack.html", []byte("<script>alert(1)</script>"))
+	requireStatus(t, badHTML, http.StatusBadRequest)
+
+	// 伪装为 png 扩展名的恶意脚本在 MIME 嗅探阶段必须被拦截
+	fakePNG := performMultipartUpload(router, "/api/uploads", "cover", "fake.png", []byte("<html><script>alert(1)</script></html>"))
+	requireStatus(t, fakePNG, http.StatusBadRequest)
+
 	cover := performMultipartUpload(router, "/api/uploads", "cover", "cover.png", samplePNGBytes())
 	requireStatus(t, cover, http.StatusCreated)
 

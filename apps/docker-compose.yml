@@ -3,7 +3,7 @@ services:
     image: mysql:8.4
     container_name: gcfeed-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: sealos123
+      MYSQL_ROOT_PASSWORD: "123456"
       MYSQL_DATABASE: GCFeed
     ports:
       - "3307:3306"

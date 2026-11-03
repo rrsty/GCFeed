@@ -312,7 +312,7 @@ func (s *HotStrategy) List(ctx context.Context, req FeedRequest) (*FeedResult, e
 	}
 	limit := normalizeLimit(req.Limit)
 
-	var page *FeedPage
+	var page *FeedPage 
 	if s.cache != nil {
 		if strings.TrimSpace(req.Cursor) != "" && (parsedCursor == nil || parsedCursor.WindowEnd.IsZero()) {
 			return nil, domainfeed.ErrInvalidCursor
@@ -475,9 +475,18 @@ func (s *FollowingStrategy) listFollowingItems(ctx context.Context, viewerID int
 		if err != nil {
 			return nil, err
 		}
-		if ok {
+		if ok && len(items) >= limit {
 			return items, nil
 		}
+		// 缓存存在但数量不足 limit 时（可能因缓存截断或部分 author outbox 缺失），回源数据库补充，保障分页完整性
+		dbItems, err := s.repo.ListFollowingPage(ctx, viewerID, parsedCursor, limit)
+		if err != nil {
+			if ok {
+				return items, nil
+			}
+			return nil, err
+		}
+		return dbItems, nil
 	}
 	return s.repo.ListFollowingPage(ctx, viewerID, parsedCursor, limit)
 }

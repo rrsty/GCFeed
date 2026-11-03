@@ -185,8 +185,21 @@ func (r *memoryInteractionRepo) GetUserProfile(ctx context.Context, userID int64
 	}, nil
 }
 
+// GetAction 模拟读取用户互动状态，供缓存缺失时回源读取。
+func (r *memoryInteractionRepo) GetAction(ctx context.Context, userID int64, videoID int64, actionType string) (*domaininteraction.Action, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := memoryInteractionActionKey(userID, videoID, actionType)
+	action, exists := r.actions[key]
+	if !exists {
+		return nil, domaininteraction.ErrActionNotFound
+	}
+	return cloneInteractionAction(action), nil
+}
+
 // SetAction 模拟点赞/收藏状态变更，并维护对应计数。
-func (r *memoryInteractionRepo) SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string) (*domaininteraction.Action, int, int, error) {
+func (r *memoryInteractionRepo) SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, occurredAt ...time.Time) (*domaininteraction.Action, int, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -196,6 +209,10 @@ func (r *memoryInteractionRepo) SetAction(ctx context.Context, userID int64, vid
 
 	key := memoryInteractionActionKey(userID, videoID, actionType)
 	action, exists := r.actions[key]
+	if exists && len(occurredAt) > 0 && !occurredAt[0].IsZero() && !action.UpdatedAt.IsZero() && action.UpdatedAt.After(occurredAt[0]) {
+		// 乱序旧事件保护
+		return cloneInteractionAction(action), r.actionCount(videoID, actionType), 0, nil
+	}
 	if exists && idempotencyKey != "" && action.IdempotencyKey == strings.TrimSpace(idempotencyKey) {
 		// 幂等键命中时直接返回当前状态和计数，模拟真实仓储重放逻辑。
 		return cloneInteractionAction(action), r.actionCount(videoID, actionType), 0, nil
@@ -601,6 +618,39 @@ func TestInteractionAsyncActionPipeline(t *testing.T) {
 	}
 }
 
+func TestInteractionWorkerRejectsOutdatedEvent(t *testing.T) {
+	repo := newMemoryInteractionRepo()
+	now := time.Now()
+	// 先执行较新的取消事件 (t2)
+	_, _, _, err := repo.SetAction(context.Background(), 42, 1001, domaininteraction.ActionTypeLike, false, "unlike-t2", now)
+	if err != nil {
+		t.Fatalf("set action: %v", err)
+	}
+
+	worker := applicationinteraction.NewActionWorker(repo, nil)
+	// 模拟晚到的迟到点赞事件 (t1 < t2)
+	outdatedEvent := &applicationinteraction.ActionChangedEvent{
+		UserID:         42,
+		VideoID:        1001,
+		ActionType:     domaininteraction.ActionTypeLike,
+		Active:         true,
+		IdempotencyKey: "like-t1",
+		OccurredAt:     now.Add(-10 * time.Second),
+	}
+	if err := worker.HandleActionChanged(context.Background(), outdatedEvent); err != nil {
+		t.Fatalf("handle outdated event: %v", err)
+	}
+
+	// 确认数据库状态仍是取消态 (未点赞)，没有被迟到的旧点赞覆盖
+	action, err := repo.GetAction(context.Background(), 42, 1001, domaininteraction.ActionTypeLike)
+	if err != nil {
+		t.Fatalf("get action: %v", err)
+	}
+	if action.Active() {
+		t.Fatalf("outdated event should not overwrite newer state")
+	}
+}
+
 // newInteractionRouter 只装配互动相关 RESTful 路由。
 func newInteractionRouter(t *testing.T) (*gin.Engine, *infrajwt.Manager) {
 	t.Helper()
@@ -792,7 +842,7 @@ func (w *memoryInteractionMessageWriter) Messages() []memoryInteractionMessage {
 	return items
 }
 
-func (p *memoryActionPipeline) SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat) (*applicationinteraction.ActionStateResult, error) {
+func (p *memoryActionPipeline) SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat, initialAction ...*domaininteraction.Action) (*applicationinteraction.ActionStateResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -807,7 +857,13 @@ func (p *memoryActionPipeline) SetActionState(ctx context.Context, userID int64,
 	}
 	delta := 0
 	if state == nil {
-		if active {
+		if len(initialAction) > 0 && initialAction[0] != nil {
+			if initialAction[0].Active() && !active {
+				delta = -1
+			} else if !initialAction[0].Active() && active {
+				delta = 1
+			}
+		} else if active {
 			delta = 1
 		}
 	} else if state.Active != active {

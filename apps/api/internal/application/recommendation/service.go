@@ -75,6 +75,7 @@ type cursorPayload struct {
 	RankScore   float64 `json:"rank_score"`
 	PublishedAt string  `json:"published_at"`
 	VideoID     int64   `json:"video_id"`
+	SessionTime string  `json:"session_time,omitempty"`
 }
 
 func New(repo domainrecommendation.Repository, options ...Option) *Service {
@@ -107,13 +108,18 @@ func (s *Service) Recommend(ctx context.Context, input CandidateRequest) (*Candi
 		return nil, err
 	}
 
+	sessionTime := s.now()
+	if req.Cursor != nil && !req.Cursor.SessionTime.IsZero() {
+		sessionTime = req.Cursor.SessionTime
+	}
+
 	poolLimit := candidatePoolLimit(limit)
 	pool, err := s.repo.ListCandidatePool(ctx, req.UserID, poolLimit)
 	if err != nil {
 		return nil, ErrLoadRecommendationFailed
 	}
 
-	ranked, err := s.rankCandidates(ctx, req.UserID, pool)
+	ranked, err := s.rankCandidates(ctx, req.UserID, pool, sessionTime)
 	if err != nil {
 		return nil, ErrLoadRecommendationFailed
 	}
@@ -130,6 +136,7 @@ func (s *Service) Recommend(ctx context.Context, input CandidateRequest) (*Candi
 			RankScore:   ranked[len(ranked)-1].RankScore,
 			PublishedAt: ranked[len(ranked)-1].PublishedAt,
 			VideoID:     ranked[len(ranked)-1].VideoID,
+			SessionTime: sessionTime,
 		})
 	}
 	ranked = interleaveByAuthor(ranked)
@@ -223,7 +230,7 @@ func (s *Service) SaveExposures(ctx context.Context, inputs []ExposureInput) (*E
 	return &ExposureResult{Exposures: exposures}, nil
 }
 
-func (s *Service) rankCandidates(ctx context.Context, userID int64, pool []*domainrecommendation.Candidate) ([]*domainrecommendation.Candidate, error) {
+func (s *Service) rankCandidates(ctx context.Context, userID int64, pool []*domainrecommendation.Candidate, now time.Time) ([]*domainrecommendation.Candidate, error) {
 	if len(pool) == 0 {
 		return []*domainrecommendation.Candidate{}, nil
 	}
@@ -243,7 +250,9 @@ func (s *Service) rankCandidates(ctx context.Context, userID int64, pool []*doma
 		return nil, err
 	}
 
-	now := s.now()
+	if now.IsZero() {
+		now = s.now()
+	}
 	ranked := make([]*domainrecommendation.Candidate, 0, len(pool))
 	for _, candidate := range pool {
 		if candidate == nil {
@@ -280,14 +289,7 @@ func normalizeLimit(limit int) int {
 }
 
 func candidatePoolLimit(limit int) int {
-	poolLimit := limit * candidatePoolMultiplier
-	if poolLimit < minCandidatePoolSize {
-		poolLimit = minCandidatePoolSize
-	}
-	if poolLimit > maxCandidatePoolSize {
-		poolLimit = maxCandidatePoolSize
-	}
-	return poolLimit
+	return min(max(limit*candidatePoolMultiplier, minCandidatePoolSize), maxCandidatePoolSize)
 }
 
 func rankScore(similarity float64, hotScore int, freshness float64, hasUserVector bool) float64 {
@@ -414,10 +416,17 @@ func parseCursor(raw string) (*domainrecommendation.Cursor, error) {
 	if err != nil {
 		return nil, domainrecommendation.ErrInvalidCursor
 	}
+	var sessionTime time.Time
+	if strings.TrimSpace(payload.SessionTime) != "" {
+		if st, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(payload.SessionTime)); err == nil {
+			sessionTime = st
+		}
+	}
 	cursor := &domainrecommendation.Cursor{
 		RankScore:   payload.RankScore,
 		PublishedAt: publishedAt,
 		VideoID:     payload.VideoID,
+		SessionTime: sessionTime,
 	}
 	if !cursor.Valid() {
 		return nil, domainrecommendation.ErrInvalidCursor
@@ -429,10 +438,15 @@ func encodeCursor(cursor *domainrecommendation.Cursor) string {
 	if cursor == nil || !cursor.Valid() {
 		return ""
 	}
+	sessionTimeStr := ""
+	if !cursor.SessionTime.IsZero() {
+		sessionTimeStr = cursor.SessionTime.UTC().Format(time.RFC3339Nano)
+	}
 	content, err := json.Marshal(cursorPayload{
 		RankScore:   cursor.RankScore,
 		PublishedAt: cursor.PublishedAt.UTC().Format(time.RFC3339Nano),
 		VideoID:     cursor.VideoID,
+		SessionTime: sessionTimeStr,
 	})
 	if err != nil {
 		return ""

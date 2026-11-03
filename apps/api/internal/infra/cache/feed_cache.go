@@ -144,6 +144,16 @@ func (c *FeedCache) SetCards(ctx context.Context, cards map[int64]*domainfeed.Fe
 	return err
 }
 
+// DeleteCard 删除指定视频的卡片缓存，用于视频删除等场景的缓存失效闭环。
+func (c *FeedCache) DeleteCard(ctx context.Context, videoID int64) error {
+	if videoID <= 0 {
+		return nil
+	}
+	err := c.client.Del(ctx, feedCardKey(videoID)).Err()
+	inframetrics.ObserveCacheWrite("card_delete", 1, err)
+	return err
+}
+
 // GetStats 批量读取视频计数缓存。
 func (c *FeedCache) GetStats(ctx context.Context, videoIDs []int64) (map[int64]*domainfeed.FeedStat, error) {
 	return getStats(ctx, c.client, videoIDs)
@@ -326,6 +336,7 @@ func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, 
 	}
 
 	seen := map[int64]struct{}{}
+	allowedAuthors := int64Set(authorIDs)
 	items := make([]*domainfeed.FeedPageItem, 0, limit*len(rangeCommands))
 	for commandIndex, cmd := range rangeCommands {
 		members, err := cmd.Result()
@@ -337,9 +348,21 @@ func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, 
 			if !ok {
 				continue
 			}
-			if commandIndex > 0 && item.AuthorID > 0 {
-				allowedAuthors := int64Set(authorIDs)
+			// 针对 inbox 和 outbox 均校验当前关注关系，取关作者内容不再展示并异步清理 inbox 残留
+			if item.AuthorID > 0 {
 				if _, followed := allowedAuthors[item.AuthorID]; !followed {
+					if commandIndex == 0 {
+						go func(vID int64, mem string) {
+							_ = c.client.ZRem(context.Background(), followingInboxKey(vID), mem).Err()
+						}(viewerID, member)
+					}
+					continue
+				}
+			}
+			// 应用层依据 (PublishedAt, VideoID) 全序过滤游标，杜绝 score 截断/冲突造成的漏项或重复
+			if cursor != nil {
+				if !item.PublishedAt.Before(cursor.PublishedAt) &&
+					!(item.PublishedAt.Equal(cursor.PublishedAt) && item.VideoID < cursor.VideoID) {
 					continue
 				}
 			}
@@ -434,7 +457,7 @@ func (c *FeedCache) listHotWindowPage(ctx context.Context, windowKey string, off
 }
 
 // SetActionState 写入 Redis 行为状态和实时计数，供点赞收藏接口快速返回。
-func (c *FeedCache) SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat) (*applicationinteraction.ActionStateResult, error) {
+func (c *FeedCache) SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat, initialAction ...*domaininteraction.Action) (*applicationinteraction.ActionStateResult, error) {
 	actionType, err := domaininteraction.NormalizeActionType(actionType)
 	if err != nil {
 		return nil, err
@@ -468,7 +491,18 @@ func (c *FeedCache) SetActionState(ctx context.Context, userID int64, videoID in
 			delta = 0
 		} else {
 			if storedStatus == 0 {
-				if active {
+				// 缓存缺失时使用回源行为状态纠偏（避免已点赞因缓存淘汰而在取消时被误判为无需变更）
+				if len(initialAction) > 0 && initialAction[0] != nil {
+					if initialAction[0].Active() {
+						if !active {
+							delta = -1
+						}
+					} else {
+						if active {
+							delta = 1
+						}
+					}
+				} else if active {
 					delta = 1
 				}
 			} else if storedStatus != targetStatus {
@@ -494,7 +528,10 @@ func (c *FeedCache) SetActionState(ctx context.Context, userID int64, videoID in
 			if delta != 0 {
 				pipe.HIncrBy(ctx, counterShardKey, interactionStatField(actionType), int64(delta))
 			}
-			pipe.Expire(ctx, counterShardKey, actionStatTTL)
+			// 统一刷新所有分片计数 TTL，保证 Base 与 Shards 生命周期同步，杜绝孤立分片过期丢失增量
+			for _, shardKey := range interactionStatCounterShardKeys(videoID) {
+				pipe.Expire(ctx, shardKey, actionStatTTL)
+			}
 			return nil
 		})
 		if err != nil {
@@ -786,7 +823,7 @@ func interactionStatCounterShardKey(videoID int64, shard int) string {
 
 func interactionStatCounterShardKeys(videoID int64) []string {
 	keys := make([]string, 0, actionStatCounterShardCount)
-	for shard := 0; shard < actionStatCounterShardCount; shard++ {
+	for shard := range actionStatCounterShardCount {
 		keys = append(keys, interactionStatCounterShardKey(videoID, shard))
 	}
 	return keys

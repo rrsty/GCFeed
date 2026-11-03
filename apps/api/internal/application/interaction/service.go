@@ -56,7 +56,7 @@ type ActionStateResult struct {
 
 // ActionStateStore 保存点赞收藏的快速状态和计数。
 type ActionStateStore interface {
-	SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat) (*ActionStateResult, error)
+	SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat, initialAction ...*domaininteraction.Action) (*ActionStateResult, error)
 }
 
 // ActionEventPublisher 投递点赞收藏变更事件。
@@ -307,7 +307,15 @@ func (s *Service) setActionAsync(ctx context.Context, userID int64, videoID int6
 		return nil, ErrUpdateInteractionFailed
 	}
 
-	state, err := s.actionStateStore.SetActionState(ctx, userID, videoID, actionType, active, idempotencyKey, initialStat)
+	var initialAction *domaininteraction.Action
+	if !active {
+		// 取消行为时若缓存可能缺失，回源读取用户已有状态，避免缓存淘汰导致无法正确取消和扣减计数
+		if act, err := s.repo.GetAction(ctx, userID, videoID, actionType); err == nil {
+			initialAction = act
+		}
+	}
+
+	state, err := s.actionStateStore.SetActionState(ctx, userID, videoID, actionType, active, idempotencyKey, initialStat, initialAction)
 	if err != nil {
 		return nil, ErrUpdateInteractionFailed
 	}
