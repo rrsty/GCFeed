@@ -45,17 +45,20 @@ func (r *Repository) SetFollow(ctx context.Context, userID int64, targetUserID i
 	var userStat RelationStatModel
 	var targetStat RelationStatModel
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := lockNormalUser(tx, userID); err != nil {
+		// 使用普通读校验账号有效，不对大 V account 行加排他锁，消除并发互关死锁和热点串行化。
+		if err := ensureNormalUser(tx, userID); err != nil {
 			return err
 		}
-		if err := lockNormalUser(tx, targetUserID); err != nil {
+		if err := ensureNormalUser(tx, targetUserID); err != nil {
 			return err
 		}
 
-		if err := ensureStat(tx, userID); err != nil {
+		// 按升序初始化统计行，保证锁获取顺序一致。
+		firstID, secondID := orderedPair(userID, targetUserID)
+		if err := ensureStat(tx, firstID); err != nil {
 			return err
 		}
-		if err := ensureStat(tx, targetUserID); err != nil {
+		if err := ensureStat(tx, secondID); err != nil {
 			return err
 		}
 
@@ -85,11 +88,7 @@ func (r *Repository) SetFollow(ctx context.Context, userID int64, targetUserID i
 		} else {
 			if idempotencyKey != "" && idempotencyKeyValue(follow.IdempotencyKey) == idempotencyKey {
 				var err error
-				userStat, err = currentStat(tx, userID)
-				if err != nil {
-					return err
-				}
-				targetStat, err = currentStat(tx, targetUserID)
+				userStat, targetStat, err = loadRelationStatsOrdered(tx, userID, targetUserID)
 				return err
 			}
 
@@ -113,19 +112,12 @@ func (r *Repository) SetFollow(ctx context.Context, userID int64, targetUserID i
 
 		var err error
 		if delta != 0 {
-			userStat, err = updateStat(tx, userID, delta, 0)
-			if err != nil {
-				return err
-			}
-			targetStat, err = updateStat(tx, targetUserID, 0, delta)
+			// 严格按 user_id 升序加锁更新双方统计，彻底杜绝互相关注 AB-BA 死锁。
+			userStat, targetStat, err = updateRelationStatsOrdered(tx, userID, targetUserID, delta)
 			return err
 		}
 
-		userStat, err = currentStat(tx, userID)
-		if err != nil {
-			return err
-		}
-		targetStat, err = currentStat(tx, targetUserID)
+		userStat, targetStat, err = loadRelationStatsOrdered(tx, userID, targetUserID)
 		return err
 	})
 	if err != nil {
@@ -216,13 +208,64 @@ func statusFromActive(active bool) int {
 	return domainrelation.FollowStatusCanceled
 }
 
-func lockNormalUser(tx *gorm.DB, userID int64) error {
+func ensureNormalUser(tx *gorm.DB, userID int64) error {
 	var user infraaccount.UserModel
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+	err := tx.Select("id").
 		Where("id = ? AND status = ?", userID, domainaccount.StatusNormal).
 		Take(&user).
 		Error
 	return mapUserError(err)
+}
+
+func orderedPair(left int64, right int64) (int64, int64) {
+	if left <= right {
+		return left, right
+	}
+	return right, left
+}
+
+func loadRelationStatsOrdered(tx *gorm.DB, userID int64, targetUserID int64) (RelationStatModel, RelationStatModel, error) {
+	var userStat, targetStat RelationStatModel
+	if userID <= targetUserID {
+		var err error
+		if userStat, err = currentStat(tx, userID); err != nil {
+			return userStat, targetStat, err
+		}
+		if targetStat, err = currentStat(tx, targetUserID); err != nil {
+			return userStat, targetStat, err
+		}
+		return userStat, targetStat, nil
+	}
+	var err error
+	if targetStat, err = currentStat(tx, targetUserID); err != nil {
+		return userStat, targetStat, err
+	}
+	if userStat, err = currentStat(tx, userID); err != nil {
+		return userStat, targetStat, err
+	}
+	return userStat, targetStat, nil
+}
+
+func updateRelationStatsOrdered(tx *gorm.DB, userID int64, targetUserID int64, delta int) (RelationStatModel, RelationStatModel, error) {
+	var userStat, targetStat RelationStatModel
+	if userID <= targetUserID {
+		var err error
+		if userStat, err = updateStat(tx, userID, delta, 0); err != nil {
+			return userStat, targetStat, err
+		}
+		if targetStat, err = updateStat(tx, targetUserID, 0, delta); err != nil {
+			return userStat, targetStat, err
+		}
+		return userStat, targetStat, nil
+	}
+	var err error
+	if targetStat, err = updateStat(tx, targetUserID, 0, delta); err != nil {
+		return userStat, targetStat, err
+	}
+	if userStat, err = updateStat(tx, userID, delta, 0); err != nil {
+		return userStat, targetStat, err
+	}
+	return userStat, targetStat, nil
 }
 
 func ensureStat(tx *gorm.DB, userID int64) error {

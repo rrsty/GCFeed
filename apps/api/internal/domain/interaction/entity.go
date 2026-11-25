@@ -60,6 +60,13 @@ type VideoStat struct {
 	FavoriteCount int
 }
 
+// VideoStatDelta 表示异步窗口聚合后待批量刷库的视频点赞/收藏增量。
+type VideoStatDelta struct {
+	VideoID       int64
+	LikeDelta     int
+	FavoriteDelta int
+}
+
 // UserProfile 保存互动消息需要展示的用户资料。
 type UserProfile struct {
 	ID        int64

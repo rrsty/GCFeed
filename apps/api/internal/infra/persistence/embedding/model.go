@@ -4,8 +4,8 @@ import "time"
 
 // VideoEmbeddingModel 映射 video_embedding 表，保存视频内容向量。
 type VideoEmbeddingModel struct {
-	VideoID       int64     `gorm:"column:video_id;primaryKey;autoIncrement:false;uniqueIndex:uk_video_model,priority:1"`
-	Model         string    `gorm:"column:model;size:64;not null;primaryKey;uniqueIndex:uk_video_model,priority:2;index:idx_model_updated,priority:1"`
+	VideoID       int64     `gorm:"column:video_id;primaryKey;autoIncrement:false"`
+	Model         string    `gorm:"column:model;size:64;not null;primaryKey;index:idx_model_updated,priority:1"`
 	Dimension     int       `gorm:"column:dimension;not null"`
 	EmbeddingJSON string    `gorm:"column:embedding_json;type:json;not null"`
 	TextHash      string    `gorm:"column:text_hash;size:64;not null"`

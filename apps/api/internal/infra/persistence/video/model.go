@@ -11,10 +11,10 @@ type VideoModel struct {
 	MediaURL    string     `gorm:"column:media_url;size:512;not null"`
 	CoverURL    string     `gorm:"column:cover_url;size:512;not null"`
 	Status      int        `gorm:"column:status;type:tinyint;not null;default:2;index:idx_author_status,priority:2;index:idx_status_published,priority:1"`
-	PublishedAt *time.Time `gorm:"column:published_at;index:idx_status_published,priority:2"`
+	PublishedAt *time.Time `gorm:"column:published_at;index:idx_author_status,priority:3;index:idx_status_published,priority:2"`
 	// IdempotencyKey 与 AuthorID 组成唯一索引，用于发布接口的安全重试。
 	IdempotencyKey *string   `gorm:"column:idempotency_key;size:128;uniqueIndex:uk_author_idempotency,priority:2"`
-	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime;index:idx_author_status,priority:3"`
+	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
 

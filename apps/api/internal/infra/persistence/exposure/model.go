@@ -5,7 +5,7 @@ import "time"
 // ViewEventModel 映射 video_view_events 表，保存观看行为流水。
 type ViewEventModel struct {
 	ID        int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	UserID    int64     `gorm:"column:user_id;not null;index:idx_user_created,priority:1"`
+	UserID    int64     `gorm:"column:user_id;not null;index:idx_user_created,priority:1;index:idx_user_scene_created,priority:1"`
 	VideoID   int64     `gorm:"column:video_id;not null;index:idx_video_created,priority:1"`
 	Scene     string    `gorm:"column:scene;size:32;not null;index:idx_user_scene_created,priority:2"`
 	RequestID *string   `gorm:"column:request_id;size:64;index:idx_request_event,priority:1"`

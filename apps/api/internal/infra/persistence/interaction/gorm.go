@@ -128,22 +128,63 @@ func (r *Repository) GetAction(ctx context.Context, userID int64, videoID int64,
 
 // SetAction 写入点赞或收藏状态，并在同一事务内维护视频统计计数。
 func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, occurredAt ...time.Time) (*domaininteraction.Action, int, int, error) {
+	return r.setAction(ctx, userID, videoID, actionType, active, idempotencyKey, true, occurredAt...)
+}
+
+// SetActionRecordOnly 仅持久化点赞或收藏明细状态并返回真实 delta，供 Worker 窗口攒批聚合更新 video_stat。
+func (r *Repository) SetActionRecordOnly(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, occurredAt ...time.Time) (*domaininteraction.Action, int, error) {
+	action, _, delta, err := r.setAction(ctx, userID, videoID, actionType, active, idempotencyKey, false, occurredAt...)
+	return action, delta, err
+}
+
+// BatchAddVideoStatDeltas 按视频维度原子合并刷入攒批的点赞/收藏增量，大幅降低热点行写放大。
+func (r *Repository) BatchAddVideoStatDeltas(ctx context.Context, deltas []domaininteraction.VideoStatDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, item := range deltas {
+			if item.VideoID <= 0 || (item.LikeDelta == 0 && item.FavoriteDelta == 0) {
+				continue
+			}
+			updates := map[string]any{}
+			if item.LikeDelta != 0 {
+				updates["like_count"] = gorm.Expr("GREATEST(0, like_count + ?)", item.LikeDelta)
+			}
+			if item.FavoriteDelta != 0 {
+				updates["favorite_count"] = gorm.Expr("GREATEST(0, favorite_count + ?)", item.FavoriteDelta)
+			}
+			if err := tx.Model(&infravideo.VideoStatModel{}).
+				Where("video_id = ?", item.VideoID).
+				Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (r *Repository) setAction(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, updateStatNow bool, occurredAt ...time.Time) (*domaininteraction.Action, int, int, error) {
 	actionType, err := domaininteraction.NormalizeActionType(actionType)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	eventAtNS := int64(0)
+	if len(occurredAt) > 0 && !occurredAt[0].IsZero() {
+		eventAtNS = occurredAt[0].UTC().UnixNano()
+	}
 
 	var action ActionModel
 	var count int
 	var statDelta int
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 先锁定公开视频，保证互动只发生在可互动的视频上。
-		if err := lockPublishedVideo(tx, videoID); err != nil {
+		// 校验公开视频存在但不加排他行锁，避免爆款视频写热点串行化和锁序死锁。
+		if err := ensurePublishedVideo(tx, videoID); err != nil {
 			return err
 		}
 
-		// 锁定用户在该视频上的同类行为记录，避免并发请求同时改计数。
+		// 锁定用户在该视频上的同类行为记录；若首次并发插入撞唯一索引则回退重查加锁。
 		findErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("user_id = ? AND video_id = ? AND action_type = ?", userID, videoID, actionType).
 			Take(&action).
@@ -155,44 +196,61 @@ func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64,
 		delta := 0
 		nextStatus := actionStatusFromActive(active)
 		if errors.Is(findErr, gorm.ErrRecordNotFound) {
-			// 首次 DELETE 会创建取消态记录，保证后续 PUT/DELETE 都有稳定幂等基准。
 			action = ActionModel{
 				UserID:         userID,
 				VideoID:        videoID,
 				ActionType:     actionType,
 				Status:         nextStatus,
 				IdempotencyKey: idempotencyKeyPtr(idempotencyKey),
+				LastEventAtNS:  eventAtNS,
 			}
-			if err := tx.Create(&action).Error; err != nil {
-				return err
-			}
-			if active {
-				delta = 1
-			}
-		} else {
-			// 乱序事件保护：若事件发生时间早于当前记录的更新时间，说明是迟到的旧事件，直接忽略避免覆盖新状态
-			if len(occurredAt) > 0 && !occurredAt[0].IsZero() && !action.UpdatedAt.IsZero() && action.UpdatedAt.After(occurredAt[0]) {
-				currentCount, err := currentActionCount(tx, videoID, actionType)
-				if err != nil {
+			createErr := tx.Create(&action).Error
+			if createErr != nil {
+				if !isDuplicateKeyError(createErr) {
+					return createErr
+				}
+				// 并发首次创建撞唯一键时重查锁定既有记录，避免间隙锁死锁。
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+					Where("user_id = ? AND video_id = ? AND action_type = ?", userID, videoID, actionType).
+					Take(&action).
+					Error; err != nil {
 					return err
 				}
-				count = currentCount
+				findErr = nil
+			} else if active {
+				delta = 1
+			}
+		}
+
+		if findErr == nil {
+			// 乱序事件保护：使用事件产生时间戳（纳秒）比较，避免受队列消费延迟和 DB 秒级 UpdatedAt 误杀新事件。
+			if eventAtNS > 0 && action.LastEventAtNS > 0 && eventAtNS < action.LastEventAtNS {
+				if updateStatNow {
+					currentCount, err := currentActionCount(tx, videoID, actionType)
+					if err != nil {
+						return err
+					}
+					count = currentCount
+				}
 				return nil
 			}
 
 			// 同一幂等键直接返回当前计数，避免客户端重试重复变更统计。
 			if idempotencyKey != "" && idempotencyKeyValue(action.IdempotencyKey) == idempotencyKey {
-				currentCount, err := currentActionCount(tx, videoID, actionType)
-				if err != nil {
-					return err
+				if updateStatNow {
+					currentCount, err := currentActionCount(tx, videoID, actionType)
+					if err != nil {
+						return err
+					}
+					count = currentCount
 				}
-				count = currentCount
 				return nil
 			}
 
 			// 只有状态真正变化时才更新 video_stat，重复 PUT 或 DELETE 保持计数稳定。
 			previousStatus := action.Status
 			previousIdempotencyKey := idempotencyKeyValue(action.IdempotencyKey)
+			previousEventAtNS := action.LastEventAtNS
 			if action.Status != nextStatus {
 				if active {
 					delta = 1
@@ -202,13 +260,20 @@ func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64,
 			}
 			action.Status = nextStatus
 			action.IdempotencyKey = idempotencyKeyPtr(idempotencyKey)
-			if previousStatus != nextStatus || previousIdempotencyKey != idempotencyKey {
+			if eventAtNS > action.LastEventAtNS {
+				action.LastEventAtNS = eventAtNS
+			}
+			if previousStatus != nextStatus || previousIdempotencyKey != idempotencyKey || action.LastEventAtNS != previousEventAtNS {
 				if err := tx.Save(&action).Error; err != nil {
 					return err
 				}
 			}
 		}
 
+		statDelta = delta
+		if !updateStatNow {
+			return nil
+		}
 		if delta == 0 {
 			currentCount, err := currentActionCount(tx, videoID, actionType)
 			if err != nil {
@@ -219,7 +284,6 @@ func (r *Repository) SetAction(ctx context.Context, userID int64, videoID int64,
 		}
 
 		count, err = updateActionStat(tx, videoID, actionType, delta)
-		statDelta = delta
 		return err
 	})
 	if err != nil {
@@ -241,8 +305,8 @@ func (r *Repository) CreateComment(ctx context.Context, comment *domaininteracti
 	var model CommentModel
 	var count int
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 评论只能写入已发布视频，锁定视频行可以避免状态变化时写入脏数据。
-		if err := lockPublishedVideo(tx, comment.VideoID); err != nil {
+		// 校验公开视频存在但不加排他锁，避免评论写入阻塞同一视频的点赞和删评。
+		if err := ensurePublishedVideo(tx, comment.VideoID); err != nil {
 			return err
 		}
 
@@ -382,8 +446,8 @@ func (r *Repository) DeleteComment(ctx context.Context, commentID int64, userID 
 		}
 
 		var video infravideo.VideoModel
-		// 读取视频作者用于权限判断：评论作者、视频作者、管理员都可删除。
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		// 普通读获取视频作者用于权限判断（不再对 video 加排他锁，消除与评论/点赞的锁序死锁）。
+		if err := tx.Select("id, author_id").
 			Where("id = ?", model.VideoID).
 			Take(&video).
 			Error; err != nil {
@@ -441,10 +505,10 @@ func (r *Repository) commentCount(ctx context.Context, videoID int64) (int, erro
 	return stat.CommentCount, nil
 }
 
-// lockPublishedVideo 校验并锁定已发布视频，互动写入前都会经过这里。
-func lockPublishedVideo(tx *gorm.DB, videoID int64) error {
+// ensurePublishedVideo 校验已发布视频存在，使用普通读避免对热点视频加排他锁。
+func ensurePublishedVideo(tx *gorm.DB, videoID int64) error {
 	var video infravideo.VideoModel
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+	err := tx.Select("id").
 		Where("id = ? AND status = ?", videoID, domainvideo.StatusPublished).
 		Take(&video).
 		Error
@@ -467,33 +531,29 @@ func currentActionCount(tx *gorm.DB, videoID int64, actionType string) (int, err
 	return currentVideoStatCounter(tx, videoID, "favorite_count")
 }
 
-// updateVideoStatCounter 锁定 video_stat 后更新计数，避免并发写丢失。
+// updateVideoStatCounter 使用单句原子 SQL 更新计数，缩短锁持有时间并避免负数。
 func updateVideoStatCounter(tx *gorm.DB, videoID int64, field string, delta int) (int, error) {
-	var stat infravideo.VideoStatModel
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("video_id = ?", videoID).Take(&stat).Error; err != nil {
-		return 0, mapVideoError(err)
-	}
-
 	switch field {
-	case "like_count":
-		stat.LikeCount = clampCount(stat.LikeCount + delta)
-	case "favorite_count":
-		stat.FavoriteCount = clampCount(stat.FavoriteCount + delta)
-	case "comment_count":
-		stat.CommentCount = clampCount(stat.CommentCount + delta)
+	case "like_count", "favorite_count", "comment_count":
 	default:
 		return 0, domaininteraction.ErrInvalidActionType
 	}
 
-	if err := tx.Save(&stat).Error; err != nil {
-		return 0, err
+	result := tx.Model(&infravideo.VideoStatModel{}).
+		Where("video_id = ?", videoID).
+		Update(field, gorm.Expr("GREATEST(0, "+field+" + ?)", delta))
+	if result.Error != nil {
+		return 0, result.Error
 	}
-	return statCounter(stat, field), nil
+	if result.RowsAffected == 0 {
+		return 0, domaininteraction.ErrVideoNotFound
+	}
+	return currentVideoStatCounter(tx, videoID, field)
 }
 
 func currentVideoStatCounter(tx *gorm.DB, videoID int64, field string) (int, error) {
 	var stat infravideo.VideoStatModel
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("video_id = ?", videoID).Take(&stat).Error; err != nil {
+	if err := tx.Where("video_id = ?", videoID).Take(&stat).Error; err != nil {
 		return 0, mapVideoError(err)
 	}
 	return statCounter(stat, field), nil

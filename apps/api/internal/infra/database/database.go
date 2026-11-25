@@ -3,6 +3,7 @@ package infradatabase
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	infraconfig "GCFeed/internal/infra/config"
 
@@ -26,11 +27,14 @@ func New(dbcfg infraconfig.DatabaseConfig) (*sql.DB, error) {
 		return nil, err
 	}
 
-	// 小项目使用固定连接池参数，后续可按压测结果调整。
+	// 配置连接池容量与生命周期，防止被 MySQL wait_timeout 断开后产生僵尸连接。
 	db.SetMaxIdleConns(10)
 	db.SetMaxOpenConns(50)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 

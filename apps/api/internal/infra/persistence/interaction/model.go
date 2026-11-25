@@ -11,9 +11,11 @@ type ActionModel struct {
 	ActionType string `gorm:"column:action_type;size:16;not null;uniqueIndex:uk_user_video_type,priority:3;index:idx_video_type_status,priority:2;index:idx_user_type_status,priority:2"`
 	Status     int    `gorm:"column:status;type:tinyint;not null;default:1;index:idx_video_type_status,priority:3;index:idx_user_type_status,priority:3"`
 	// IdempotencyKey 保存最近一次请求键，用于重复请求返回稳定结果。
-	IdempotencyKey *string   `gorm:"column:idempotency_key;size:128"`
-	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime"`
+	IdempotencyKey *string `gorm:"column:idempotency_key;size:128"`
+	// LastEventAtNS 记录最新生效事件的产生时间戳（Unix 纳秒），用于异步消费乱序保护，避免与 DB 写入时间 UpdatedAt 混淆。
+	LastEventAtNS int64     `gorm:"column:last_event_at_ns;not null;default:0"`
+	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt     time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 // TableName 指定互动行为表名。
@@ -30,7 +32,7 @@ type CommentModel struct {
 	Status         int       `gorm:"column:status;type:tinyint;not null;default:1;index:idx_video_status_created,priority:2"`
 	IdempotencyKey *string   `gorm:"column:idempotency_key;size:128;uniqueIndex:uk_user_idempotency,priority:2"`
 	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime;index:idx_video_status_created,priority:3;index:idx_user_created,priority:2"`
-	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime;index:idx_video_status_created,priority:4"`
+	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 // TableName 指定评论表名。
