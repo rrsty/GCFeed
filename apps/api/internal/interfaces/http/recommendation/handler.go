@@ -26,6 +26,10 @@ func (h *Handler) ListCandidates(c *gin.Context) {
 
 	limit := 0
 	if req.Limit != nil {
+		if *req.Limit <= 0 {
+			writeRecommendationError(c, domainrecommendation.ErrInvalidLimit)
+			return
+		}
 		limit = *req.Limit
 	}
 	result, err := h.service.Recommend(c.Request.Context(), applicationrecommendation.CandidateRequest{

@@ -203,17 +203,22 @@ func (s *Service) DecideExposures(ctx context.Context, input ExposureDecisionInp
 }
 
 func (s *Service) SaveExposures(ctx context.Context, inputs []ExposureInput) (*ExposureResult, error) {
+	type exposureKey struct {
+		userID  int64
+		videoID int64
+	}
 	writes := make([]*domainrecommendation.ExposureWrite, 0, len(inputs))
-	seen := map[int64]struct{}{}
+	seen := map[exposureKey]struct{}{}
 	for _, input := range inputs {
 		write, err := domainrecommendation.NewExposureWrite(input.UserID, input.VideoID, input.Scene, input.RequestID)
 		if err != nil {
 			return nil, err
 		}
-		if _, exists := seen[write.VideoID]; exists {
+		key := exposureKey{userID: write.UserID, videoID: write.VideoID}
+		if _, exists := seen[key]; exists {
 			continue
 		}
-		seen[write.VideoID] = struct{}{}
+		seen[key] = struct{}{}
 		writes = append(writes, write)
 	}
 	if len(writes) == 0 {
@@ -382,7 +387,7 @@ func filterByCursor(candidates []*domainrecommendation.Candidate, cursor *domain
 		if candidate == nil {
 			continue
 		}
-		if candidate.RankScore < cursor.RankScore ||
+		if (candidate.RankScore < cursor.RankScore && !sameScore(candidate.RankScore, cursor.RankScore)) ||
 			(sameScore(candidate.RankScore, cursor.RankScore) && candidate.PublishedAt.Before(cursor.PublishedAt)) ||
 			(sameScore(candidate.RankScore, cursor.RankScore) && candidate.PublishedAt.Equal(cursor.PublishedAt) && candidate.VideoID < cursor.VideoID) {
 			filtered = append(filtered, candidate)

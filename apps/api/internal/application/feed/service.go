@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"strings"
 	"time"
 
@@ -23,12 +24,14 @@ const timelineFirstPageCacheTTL = 5 * time.Second
 const timelinePageCacheTTL = 45 * time.Second
 const feedCardCacheTTL = 15 * time.Minute
 const feedStatCacheTTL = 15 * time.Second
+const singleflightLoadTimeout = 3 * time.Second
 
 var ErrLoadFeedFailed = errors.New("failed to load feed")
 
 // Service 通过 scene 策略注册表分发不同 Feed 场景。
 type Service struct {
 	repo         domainfeed.Repository
+	cache        FeedCache
 	strategies   map[domainfeed.Scene]Strategy
 	defaultScene domainfeed.Scene
 }
@@ -73,7 +76,20 @@ type FeedCache interface {
 }
 
 type FollowingIndexCache interface {
-	ListFollowingIndexPage(ctx context.Context, viewerID int64, authorIDs []int64, cursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, bool, error)
+	ListFollowingIndexPage(ctx context.Context, viewerID int64, pullAuthorIDs []int64, followedAuthorIDs []int64, cursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, bool, error)
+}
+
+// CachedViewerActionState 表示 Redis 中缓存的用户实时点赞/收藏状态，用于覆盖未落库的 MySQL 旧状态。
+type CachedViewerActionState struct {
+	HasLike     bool
+	Liked       bool
+	HasFavorite bool
+	Favorited   bool
+}
+
+// ViewerActionCache 读取 Redis 中的用户实时互动状态，保障点赞/收藏后刷新立即可见（读己之写）。
+type ViewerActionCache interface {
+	GetViewerActionStates(ctx context.Context, viewerID int64, videoIDs []int64) (map[int64]CachedViewerActionState, error)
 }
 
 // Strategy 定义单个 Feed 场景的读取策略。
@@ -136,24 +152,32 @@ func WithStrategy(strategy Strategy) Option {
 	}
 }
 
-// WithFeedCache 为 Feed 页、卡片和计数启用读缓存。
+// WithFeedCache 为 Feed 页、卡片和计数启用读缓存（与 WithRecommender 传入顺序无关）。
 func WithFeedCache(cache FeedCache) Option {
 	return func(s *Service) {
+		s.cache = cache
 		for _, strategy := range s.strategies {
-			switch typed := strategy.(type) {
-			case *TimelineStrategy:
-				typed.cache = cache
-			case *HotStrategy:
-				typed.cache = cache
-			case *FollowingStrategy:
-				typed.cache = cache
-				if index, ok := cache.(FollowingIndexCache); ok {
-					typed.followingIndex = index
-				}
-			case *RecommendStrategy:
-				typed.cache = cache
-			}
+			attachCacheToStrategy(strategy, cache)
 		}
+	}
+}
+
+func attachCacheToStrategy(strategy Strategy, cache FeedCache) {
+	if strategy == nil || cache == nil {
+		return
+	}
+	switch typed := strategy.(type) {
+	case *TimelineStrategy:
+		typed.cache = cache
+	case *HotStrategy:
+		typed.cache = cache
+	case *FollowingStrategy:
+		typed.cache = cache
+		if index, ok := cache.(FollowingIndexCache); ok {
+			typed.followingIndex = index
+		}
+	case *RecommendStrategy:
+		typed.cache = cache
 	}
 }
 
@@ -186,6 +210,9 @@ func New(repo domainfeed.Repository, options ...Option) *Service {
 func (s *Service) RegisterStrategy(strategy Strategy) {
 	if strategy == nil {
 		return
+	}
+	if s.cache != nil {
+		attachCacheToStrategy(strategy, s.cache)
 	}
 	scene := domainfeed.NormalizeScene(strategy.Scene())
 	s.strategies[scene] = strategy
@@ -245,8 +272,8 @@ func (s *TimelineStrategy) List(ctx context.Context, req FeedRequest) (*FeedResu
 	}
 	limit := normalizeLimit(req.Limit)
 
-	page, err := loadFeedPage(ctx, s.cache, s.scene, req.Cursor, limit, s.firstPageTTL, s.pageTTL, &s.group, func() (*FeedPage, error) {
-		return s.listPageFromRepo(ctx, parsedCursor, limit)
+	page, err := loadFeedPage(ctx, s.cache, s.scene, req.Cursor, limit, s.firstPageTTL, s.pageTTL, &s.group, func(loadCtx context.Context) (*FeedPage, error) {
+		return s.listPageFromRepo(loadCtx, parsedCursor, limit)
 	})
 	if err != nil {
 		return nil, err
@@ -304,7 +331,7 @@ func (s *HotStrategy) Scene() domainfeed.Scene {
 	return domainfeed.SceneHot
 }
 
-// List 读取热榜；Redis 场景使用最近一小时分钟桶，基础场景使用仓储累计热度。
+// List 读取热榜；优先使用 Redis 一小时滑动窗口，窗口冷启动为空或 Redis 异常时自动降级 MySQL 累计热度。
 func (s *HotStrategy) List(ctx context.Context, req FeedRequest) (*FeedResult, error) {
 	parsedCursor, err := parseHotCursor(req.Cursor)
 	if err != nil {
@@ -312,12 +339,22 @@ func (s *HotStrategy) List(ctx context.Context, req FeedRequest) (*FeedResult, e
 	}
 	limit := normalizeLimit(req.Limit)
 
-	var page *FeedPage 
-	if s.cache != nil {
-		if strings.TrimSpace(req.Cursor) != "" && (parsedCursor == nil || parsedCursor.WindowEnd.IsZero()) {
-			return nil, domainfeed.ErrInvalidCursor
-		}
+	var page *FeedPage
+	useWindow := s.cache != nil && (parsedCursor == nil || !parsedCursor.WindowEnd.IsZero())
+	if useWindow {
 		page, err = s.listPageFromHotWindow(ctx, parsedCursor, limit)
+		if err != nil {
+			// Redis 故障时自动降级回源 MySQL，保障热榜可用性。
+			log.Printf("hot feed window cache failed, falling back to repo: %v", err)
+			if parsedCursor == nil {
+				page, err = s.listPageFromRepo(ctx, nil, limit)
+			} else {
+				return nil, err
+			}
+		} else if parsedCursor == nil && len(page.Items) == 0 {
+			// 冷启动或近一小时无新互动时，首页自动回源 MySQL 累计热榜，避免热门榜单全空。
+			page, err = s.listPageFromRepo(ctx, nil, limit)
+		}
 	} else {
 		page, err = s.listPageFromRepo(ctx, parsedCursor, limit)
 	}
@@ -467,18 +504,24 @@ func (s *FollowingStrategy) listPageFromRepo(ctx context.Context, viewerID int64
 
 func (s *FollowingStrategy) listFollowingItems(ctx context.Context, viewerID int64, parsedCursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, error) {
 	if s.followingIndex != nil {
-		authorIDs, err := s.repo.ListFollowingPullAuthorIDs(ctx, viewerID)
+		pullAuthorIDs, err := s.repo.ListFollowingPullAuthorIDs(ctx, viewerID)
 		if err != nil {
 			return nil, err
 		}
-		items, ok, err := s.followingIndex.ListFollowingIndexPage(ctx, viewerID, authorIDs, parsedCursor, limit)
+		followedAuthorIDs, err := s.repo.ListFollowingAuthorIDs(ctx, viewerID)
 		if err != nil {
 			return nil, err
+		}
+		items, ok, err := s.followingIndex.ListFollowingIndexPage(ctx, viewerID, pullAuthorIDs, followedAuthorIDs, parsedCursor, limit)
+		if err != nil {
+			// Redis 异常时记录日志并自动降级回源 MySQL，保障关注流主链路可用。
+			log.Printf("following feed redis index failed, falling back to repo: %v", err)
+			return s.repo.ListFollowingPage(ctx, viewerID, parsedCursor, limit)
 		}
 		if ok && len(items) >= limit {
 			return items, nil
 		}
-		// 缓存存在但数量不足 limit 时（可能因缓存截断或部分 author outbox 缺失），回源数据库补充，保障分页完整性
+		// 缓存存在但数量不足 limit 时（可能因缓存截断或部分 author outbox 缺失），回源数据库补充，保障分页完整性。
 		dbItems, err := s.repo.ListFollowingPage(ctx, viewerID, parsedCursor, limit)
 		if err != nil {
 			if ok {
@@ -568,9 +611,9 @@ func clientContextValue(context map[string]string, key string) string {
 	return context[key]
 }
 
-func loadFeedPage(ctx context.Context, cache FeedCache, scene domainfeed.Scene, cursor string, limit int, firstPageTTL time.Duration, pageTTL time.Duration, group *singleflight.Group, load func() (*FeedPage, error)) (*FeedPage, error) {
+func loadFeedPage(ctx context.Context, cache FeedCache, scene domainfeed.Scene, cursor string, limit int, firstPageTTL time.Duration, pageTTL time.Duration, group *singleflight.Group, load func(context.Context) (*FeedPage, error)) (*FeedPage, error) {
 	if cache == nil || group == nil {
-		return load()
+		return load(ctx)
 	}
 
 	cacheKey := feedPageCacheKey(scene, cursor, limit)
@@ -579,14 +622,18 @@ func loadFeedPage(ctx context.Context, cache FeedCache, scene domainfeed.Scene, 
 	}
 
 	value, err, _ := group.Do(cacheKey, func() (any, error) {
-		if page, ok, err := cache.GetPage(ctx, cacheKey); err == nil && ok {
+		// 使用脱离单请求取消的独立超时上下文，防止首个调用方断连拖垮所有合并等待的请求。
+		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), singleflightLoadTimeout)
+		defer cancel()
+
+		if page, ok, err := cache.GetPage(loadCtx, cacheKey); err == nil && ok {
 			return page, nil
 		}
-		page, err := load()
+		page, err := load(loadCtx)
 		if err != nil {
 			return nil, err
 		}
-		_ = cache.SetPage(ctx, cacheKey, page, feedPageCacheTTL(cursor, cacheKey, firstPageTTL, pageTTL))
+		_ = cache.SetPage(loadCtx, cacheKey, page, feedPageCacheTTL(cursor, cacheKey, firstPageTTL, pageTTL))
 		return page, nil
 	})
 	if err != nil {
@@ -647,6 +694,24 @@ func assembleFeedItems(ctx context.Context, repo domainfeed.Repository, cache Fe
 			return nil, err
 		}
 		viewerActions = loadedViewerActions
+		// 合并 Redis 中的实时点赞/收藏状态，保障异步写后立即刷新的读己之写一致性。
+		if actionCache, ok := cache.(ViewerActionCache); ok && actionCache != nil {
+			if cachedActions, err := actionCache.GetViewerActionStates(ctx, viewerID, videoIDs); err == nil {
+				for videoID, cached := range cachedActions {
+					state := viewerActions[videoID]
+					if state == nil {
+						state = &domainfeed.ViewerActionState{VideoID: videoID}
+						viewerActions[videoID] = state
+					}
+					if cached.HasLike {
+						state.Liked = cached.Liked
+					}
+					if cached.HasFavorite {
+						state.Favorited = cached.Favorited
+					}
+				}
+			}
+		}
 	}
 
 	items := make([]*domainfeed.FeedItem, 0, len(pageItems))
