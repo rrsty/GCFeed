@@ -3,6 +3,7 @@ package interfaceshttpfeed
 import (
 	applicationfeed "GCFeed/internal/application/feed"
 	domainfeed "GCFeed/internal/domain/feed"
+	domainrecommendation "GCFeed/internal/domain/recommendation"
 	interfaceshttpmiddleware "GCFeed/internal/interfaces/http/middleware"
 	"errors"
 	"net/http"
@@ -158,11 +159,14 @@ func writeFeedError(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 }
 
-// isBadRequestError 判断 Feed 参数错误。
+// isBadRequestError 判断 Feed 参数错误（含推荐流游标与请求 ID 参数校验错误）。
 func isBadRequestError(err error) bool {
 	return errors.Is(err, domainfeed.ErrInvalidLimit) ||
 		errors.Is(err, domainfeed.ErrInvalidCursor) ||
-		errors.Is(err, domainfeed.ErrUnsupportedScene)
+		errors.Is(err, domainfeed.ErrUnsupportedScene) ||
+		errors.Is(err, domainrecommendation.ErrInvalidCursor) ||
+		errors.Is(err, domainrecommendation.ErrRequestIDTooLong) ||
+		errors.Is(err, domainrecommendation.ErrInvalidLimit)
 }
 
 // viewerIDFromContext 读取可选登录用户 ID，个性化 Feed 策略可以使用。

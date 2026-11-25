@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os/signal"
+	"syscall"
 
 	infraconfig "GCFeed/internal/infra/config"
 	infradatabase "GCFeed/internal/infra/database"
@@ -31,21 +34,32 @@ func main() {
 	if err != nil {
 		log.Fatalf("init database failed: %v", err)
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 	log.Println("database connection initialized")
 
-	// Gin 引擎只负责 HTTP 入口，业务依赖在 router.Register 中装配。
+	// Gin 引擎只负责 HTTP 入口，业务依赖在 router.RegisterWithCleanup 中装配。
 	g := infrahttpgin.Init()
 	log.Println("gin engine initialized")
 
-	// router.Register 会完成仓储、Service、Handler 和中间件的组装。
-	if err := interfaceshttprouter.Register(g, cfg, db); err != nil {
+	// router.RegisterWithCleanup 完成仓储、Service、Handler 和中间件组装，并返回资源释放回调。
+	cleanup, err := interfaceshttprouter.RegisterWithCleanup(g, cfg, db)
+	if err != nil {
 		log.Fatalf("init router failed: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	log.Println("router registered")
 
-	// Run 会阻塞当前进程，直到服务器停止或启动失败。
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// RunWithContext 在收到 SIGINT/SIGTERM 时停止接收新请求并等待在途请求完成后优雅退出。
 	log.Println("server is running")
-	if err := infrahttpgin.Run(cfg, g); err != nil {
+	if err := infrahttpgin.RunWithContext(ctx, cfg, g); err != nil {
 		log.Fatalf("run server failed: %v", err)
 	}
+	log.Println("server stopped gracefully")
 }

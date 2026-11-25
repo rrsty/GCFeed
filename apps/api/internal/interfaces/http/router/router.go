@@ -44,29 +44,36 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
 // Register 负责后端依赖装配：数据库模型、仓储、Service、Handler、中间件和路由。
 func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
+	_, err := RegisterWithCleanup(g, cfg, db)
+	return err
+}
+
+// RegisterWithCleanup 完成路由装配并返回释放 Redis/RabbitMQ 等基础设施资源的清理函数，供优雅停机调用。
+func RegisterWithCleanup(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) (func(), error) {
 	// database/sql 连接池交给 GORM 复用，避免维护两套数据库连接。
 	gormDB, err := gorm.Open(gormmysql.New(gormmysql.Config{
 		Conn: db,
 	}), &gorm.Config{})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// AutoMigrate 根据模型创建或补齐表结构，适合教学项目快速启动。
 	if err := migration.AutoMigrate(gormDB); err != nil {
-		return err
+		return nil, err
 	}
 
 	// JWT Manager 同时被账号服务用于签发 token，也被鉴权中间件用于校验 token。
 	jwtManager, err := infrajwt.NewManager(cfg.JWT.Secret, cfg.JWT.AccessTTL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// 下面按领域模块组装依赖：Repository -> Service -> Handler。
@@ -82,10 +89,11 @@ func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
 	videoOptions := []applicationvideo.Option{}
 	interactionOptions := []applicationinteraction.Option{}
 	exposureOptions := []applicationexposure.Option{}
+	var redisClient *redis.Client
 	var feedCache *infracache.FeedCache
 	var rabbitMQ *inframq.RabbitMQ
 	if cfg.Redis.Addr != "" {
-		redisClient := infracache.NewRedisClient(cfg.Redis)
+		redisClient = infracache.NewRedisClient(cfg.Redis)
 		feedCache = infracache.NewFeedCache(redisClient)
 		feedOptions = append(feedOptions, applicationfeed.WithFeedCache(feedCache))
 		interactionOptions = append(interactionOptions, applicationinteraction.WithHotScoreRecorder(feedCache))
@@ -206,7 +214,15 @@ func Register(g *gin.Engine, cfg *infraconfig.Config, db *sql.DB) error {
 	internal.POST("/messages", messageHandler.Create)
 	internal.POST("/playback-qos-reports", playbackHandler.CreateInternalQoSReport)
 
-	return nil
+	cleanup := func() {
+		if rabbitMQ != nil {
+			_ = rabbitMQ.Close()
+		}
+		if redisClient != nil {
+			_ = redisClient.Close()
+		}
+	}
+	return cleanup, nil
 }
 
 type MessageWriter struct {
@@ -232,6 +248,7 @@ type FollowFeedBackfiller struct {
 	}
 	feedCache interface {
 		AddInboxItems(ctx context.Context, authorID int64, userIDs []int64, item *domainfeed.FeedPageItem, maxLen int64) error
+		AddInboxItemsBatch(ctx context.Context, authorID int64, userIDs []int64, items []*domainfeed.FeedPageItem, maxLen int64) error
 	}
 }
 
@@ -240,6 +257,7 @@ func NewFollowFeedBackfiller(feedRepo interface {
 	ListAuthorRecentVideos(ctx context.Context, authorID int64, limit int) ([]*domainfeed.FeedPageItem, error)
 }, feedCache interface {
 	AddInboxItems(ctx context.Context, authorID int64, userIDs []int64, item *domainfeed.FeedPageItem, maxLen int64) error
+	AddInboxItemsBatch(ctx context.Context, authorID int64, userIDs []int64, items []*domainfeed.FeedPageItem, maxLen int64) error
 }) *FollowFeedBackfiller {
 	return &FollowFeedBackfiller{feedRepo: feedRepo, feedCache: feedCache}
 }
@@ -254,6 +272,10 @@ func (b *FollowFeedBackfiller) ListAuthorRecentVideos(ctx context.Context, autho
 
 func (b *FollowFeedBackfiller) AddInboxItems(ctx context.Context, authorID int64, userIDs []int64, item *domainfeed.FeedPageItem, maxLen int64) error {
 	return b.feedCache.AddInboxItems(ctx, authorID, userIDs, item, maxLen)
+}
+
+func (b *FollowFeedBackfiller) AddInboxItemsBatch(ctx context.Context, authorID int64, userIDs []int64, items []*domainfeed.FeedPageItem, maxLen int64) error {
+	return b.feedCache.AddInboxItemsBatch(ctx, authorID, userIDs, items, maxLen)
 }
 
 // HealthCheck 提供基础健康检查接口，方便本地调试和容器探活。

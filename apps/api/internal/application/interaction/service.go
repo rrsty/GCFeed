@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -57,6 +58,11 @@ type ActionStateResult struct {
 // ActionStateStore 保存点赞收藏的快速状态和计数。
 type ActionStateStore interface {
 	SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat, initialAction ...*domaininteraction.Action) (*ActionStateResult, error)
+}
+
+// ActionStatePresenceChecker 可选检测用户行为状态是否已存在于 Redis，避免热缓存场景多余回源 DB。
+type ActionStatePresenceChecker interface {
+	HasActionState(ctx context.Context, userID int64, videoID int64, actionType string) (bool, error)
 }
 
 // ActionEventPublisher 投递点赞收藏变更事件。
@@ -307,22 +313,31 @@ func (s *Service) setActionAsync(ctx context.Context, userID int64, videoID int6
 		return nil, ErrUpdateInteractionFailed
 	}
 
+	// 无论点赞还是取消，只要 Redis 行为状态缺失就回源读取 DB 真实状态，避免缓存失效后重复点赞计数翻倍或取消失效。
+	needLoadInitialAction := true
+	if checker, ok := s.actionStateStore.(ActionStatePresenceChecker); ok {
+		if exists, checkErr := checker.HasActionState(ctx, userID, videoID, actionType); checkErr == nil {
+			needLoadInitialAction = !exists
+		}
+	}
 	var initialAction *domaininteraction.Action
-	if !active {
-		// 取消行为时若缓存可能缺失，回源读取用户已有状态，避免缓存淘汰导致无法正确取消和扣减计数
-		if act, err := s.repo.GetAction(ctx, userID, videoID, actionType); err == nil {
+	if needLoadInitialAction {
+		if act, getErr := s.repo.GetAction(ctx, userID, videoID, actionType); getErr == nil {
 			initialAction = act
 		}
 	}
 
 	state, err := s.actionStateStore.SetActionState(ctx, userID, videoID, actionType, active, idempotencyKey, initialStat, initialAction)
 	if err != nil {
-		return nil, ErrUpdateInteractionFailed
+		// Redis 异常时自动降级走同步写库，保证点赞/收藏可用。
+		log.Printf("interaction redis action state failed, falling back to sync repo: %v", err)
+		return s.setActionSync(ctx, userID, videoID, actionType, active, idempotencyKey)
 	}
 
 	if state.Delta != 0 {
 		event := NewActionChangedEvent(userID, videoID, actionType, active, idempotencyKey)
 		if err := s.actionPublisher.PublishActionChanged(ctx, event); err != nil {
+			log.Printf("interaction mq publish failed, falling back to sync repo: %v", err)
 			return s.setActionSync(ctx, userID, videoID, actionType, active, idempotencyKey)
 		}
 		s.recordActionHotScore(ctx, state.VideoID, state.ActionType, state.Delta)
@@ -358,6 +373,10 @@ func (s *Service) setActionSync(ctx context.Context, userID int64, videoID int64
 		VideoID:    action.VideoID,
 		ActionType: action.ActionType,
 		Active:     action.Active(),
+	}
+	if fullStat, statErr := s.repo.GetVideoStat(ctx, action.VideoID); statErr == nil && fullStat != nil {
+		result.LikeCount = fullStat.LikeCount
+		result.FavoriteCount = fullStat.FavoriteCount
 	}
 	if action.ActionType == domaininteraction.ActionTypeLike {
 		result.LikeCount = count

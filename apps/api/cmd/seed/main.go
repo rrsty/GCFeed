@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -10,8 +13,11 @@ import (
 	"path/filepath"
 	"time"
 
+	domainembedding "GCFeed/internal/domain/embedding"
+	domaininteraction "GCFeed/internal/domain/interaction"
 	infraconfig "GCFeed/internal/infra/config"
 	infraaccount "GCFeed/internal/infra/persistence/account"
+	infraembedding "GCFeed/internal/infra/persistence/embedding"
 	infraexposure "GCFeed/internal/infra/persistence/exposure"
 	infrafeed "GCFeed/internal/infra/persistence/feed"
 	infrainteraction "GCFeed/internal/infra/persistence/interaction"
@@ -69,6 +75,12 @@ const sampleVideoURL = "https://interactive-examples.mdn.mozilla.net/media/cc0-v
 
 func main() {
 	flag.Parse()
+	if *userCount <= 0 {
+		log.Fatalf("users 参数必须大于 0: %d", *userCount)
+	}
+	if *videoCount < 0 {
+		log.Fatalf("videos 参数不能为负数: %d", *videoCount)
+	}
 
 	// 自动适配工作目录寻找配置
 	cfgFile := *configPath
@@ -88,12 +100,26 @@ func main() {
 	log.Printf("准备连接数据库: host=%s port=%d user=%s db=%s",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, cfg.Database.Name)
 
-	// 1. 确保目标数据库存在
+	// 1. 确保目标数据库存在（增加重试机制，适应 Docker Compose 冷启动）
 	rootDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/?charset=utf8mb4&parseTime=true&loc=Local",
 		cfg.Database.User, cfg.Database.Password, cfg.Database.Host, cfg.Database.Port)
-	rawDB, err := sql.Open("mysql", rootDSN)
+	var rawDB *sql.DB
+	for attempt := 1; attempt <= 15; attempt++ {
+		rawDB, err = sql.Open("mysql", rootDSN)
+		if err == nil {
+			if pingErr := rawDB.Ping(); pingErr == nil {
+				break
+			} else {
+				_ = rawDB.Close()
+				rawDB = nil
+				err = pingErr
+			}
+		}
+		log.Printf("等待 MySQL 就绪 (重试 %d/15): %v", attempt, err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
-		log.Fatalf("连接 MySQL 失败: %v", err)
+		log.Fatalf("连接 MySQL 最终失败: %v", err)
 	}
 	defer rawDB.Close()
 
@@ -106,11 +132,21 @@ func main() {
 	// 2. 连接业务数据库并通过 GORM AutoMigrate 建表
 	appDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=true&loc=Local",
 		cfg.Database.User, cfg.Database.Password, cfg.Database.Host, cfg.Database.Port, cfg.Database.Name)
-	gormDB, err := gorm.Open(gormmysql.Open(appDSN), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
-	})
+	var gormDB *gorm.DB
+	for attempt := 1; attempt <= 5; attempt++ {
+		gormDB, err = gorm.Open(gormmysql.Open(appDSN), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Warn),
+		})
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
 	if err != nil {
 		log.Fatalf("连接 GORM 失败: %v", err)
+	}
+	if sqlConn, dbErr := gormDB.DB(); dbErr == nil {
+		defer sqlConn.Close()
 	}
 
 	log.Println("执行 AutoMigrate 检查与初始化数据表...")
@@ -119,19 +155,30 @@ func main() {
 	}
 	log.Println("数据表结构初始化成功！")
 
-	// 如果需要 reset，清空数据
+	// 如果需要 reset，清空数据（使用各模型真实表名并检查错误）
 	if *reset {
 		log.Println("清理旧数据...")
-		gormDB.Exec("TRUNCATE TABLE account")
-		gormDB.Exec("TRUNCATE TABLE video")
-		gormDB.Exec("TRUNCATE TABLE video_stat")
-		gormDB.Exec("TRUNCATE TABLE user_follow")
-		gormDB.Exec("TRUNCATE TABLE user_relation_stat")
-		gormDB.Exec("TRUNCATE TABLE interaction_action")
-		gormDB.Exec("TRUNCATE TABLE interaction_comment")
-		gormDB.Exec("TRUNCATE TABLE feed_inbox")
-		gormDB.Exec("TRUNCATE TABLE feed_view_event")
-		gormDB.Exec("TRUNCATE TABLE feed_exposure")
+		tables := []string{
+			"account",
+			"video",
+			"video_stat",
+			"video_embedding",
+			"user_follow",
+			"user_relation_stat",
+			"interaction_action",
+			"interaction_comment",
+			"feed_inbox",
+			"video_view_events",
+			"exposures",
+			"user_message",
+			"playback_config",
+			"playback_qos_log",
+		}
+		for _, table := range tables {
+			if err := gormDB.Exec("TRUNCATE TABLE `" + table + "`").Error; err != nil {
+				log.Printf("清理表 %s 警告: %v", table, err)
+			}
+		}
 	}
 
 	// 3. 生成测试用户
@@ -209,19 +256,40 @@ func main() {
 	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&videos).Error; err != nil {
 		log.Fatalf("插入视频数据失败: %v", err)
 	}
-	if err := gormDB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "video_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"like_count", "comment_count", "favorite_count"}),
-	}).Create(&stats).Error; err != nil {
+	// 使用 DoNothing 避免 Docker Compose 重启时用随机值覆盖线上已有互动计数。
+	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&stats).Error; err != nil {
 		log.Fatalf("插入视频统计数据失败: %v", err)
 	}
 	log.Printf("测试视频注入完成: 视频数=%d, 统计数据数=%d", len(videos), len(stats))
 
-	// 5. 生成部分关注关系和关系统计
+	// 生成视频内容特征向量（用于推荐流协同过滤与向量相似度计算）
+	vectorizer := domainembedding.NewHashNgramVectorizer()
+	embeddings := make([]infraembedding.VideoEmbeddingModel, 0, len(videos))
+	for _, v := range videos {
+		vec := vectorizer.Vectorize(v.Title + " " + v.Description)
+		vecJSON, _ := json.Marshal(vec)
+		h := sha256.Sum256([]byte(v.Title + " " + v.Description))
+		embeddings = append(embeddings, infraembedding.VideoEmbeddingModel{
+			VideoID:       v.ID,
+			Model:         vectorizer.Model(),
+			Dimension:     vectorizer.Dimension(),
+			EmbeddingJSON: string(vecJSON),
+			TextHash:      hex.EncodeToString(h[:]),
+		})
+	}
+	if len(embeddings) > 0 {
+		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&embeddings).Error; err != nil {
+			log.Printf("插入视频向量数据警告: %v", err)
+		} else {
+			log.Printf("视频向量注入完成: 向量数=%d", len(embeddings))
+		}
+	}
+
+	// 5. 生成部分关注关系和真实一致的关系统计
 	follows := make([]infrarelation.FollowModel, 0)
-	relationStats := make([]infrarelation.RelationStatModel, 0, len(users))
+	followingCountMap := make(map[int64]int, len(users))
+	followerCountMap := make(map[int64]int, len(users))
 	for _, u := range users {
-		followingCnt := 0
 		for _, target := range users {
 			if u.ID != target.ID && (u.ID+target.ID)%3 == 0 {
 				follows = append(follows, infrarelation.FollowModel{
@@ -229,42 +297,52 @@ func main() {
 					TargetUserID: target.ID,
 					Status:       1,
 				})
-				followingCnt++
+				followingCountMap[u.ID]++
+				followerCountMap[target.ID]++
 			}
 		}
+	}
+	relationStats := make([]infrarelation.RelationStatModel, 0, len(users))
+	for _, u := range users {
 		relationStats = append(relationStats, infrarelation.RelationStatModel{
 			UserID:         u.ID,
-			FollowingCount: followingCnt,
-			FollowerCount:  r.Intn(50),
+			FollowingCount: followingCountMap[u.ID],
+			FollowerCount:  followerCountMap[u.ID],
 		})
 	}
 
 	if len(follows) > 0 {
-		gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&follows)
+		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&follows).Error; err != nil {
+			log.Printf("插入关注记录警告: %v", err)
+		}
 	}
-	gormDB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"following_count", "follower_count"}),
-	}).Create(&relationStats)
+	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&relationStats).Error; err != nil {
+		log.Printf("插入关系统计警告: %v", err)
+	}
 	log.Printf("关注与关系统计注入完成: 关注记录数=%d", len(follows))
 
-	// 6. 为前 5 个用户对部分视频增加点赞行为记录（测试 feed 的互动状态）
+	// 6. 为前 5 个用户对部分视频增加点赞行为记录（使用标准大写 ActionTypeLike，确保 Feed 红心状态正常展示）
 	actions := make([]infrainteraction.ActionModel, 0)
-	for uid := int64(1); uid <= 5; uid++ {
-		for vid := int64(1); vid <= 20; vid++ {
+	maxSeedUser := int64(min(5, len(users)))
+	maxSeedVideo := int64(min(20, len(videos)))
+	for uid := int64(1); uid <= maxSeedUser; uid++ {
+		for vid := int64(1); vid <= maxSeedVideo; vid++ {
 			if (uid+vid)%2 == 0 {
 				actions = append(actions, infrainteraction.ActionModel{
 					UserID:     uid,
 					VideoID:    vid,
-					ActionType: "like",
-					Status:     1,
+					ActionType: domaininteraction.ActionTypeLike,
+					Status:     domaininteraction.ActionStatusActive,
 				})
 			}
 		}
 	}
 	if len(actions) > 0 {
-		gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&actions)
-		log.Printf("互动点赞状态注入完成: 点赞记录数=%d", len(actions))
+		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&actions).Error; err != nil {
+			log.Printf("插入互动点赞状态警告: %v", err)
+		} else {
+			log.Printf("互动点赞状态注入完成: 点赞记录数=%d", len(actions))
+		}
 	}
 
 	// 7. 汇总状态

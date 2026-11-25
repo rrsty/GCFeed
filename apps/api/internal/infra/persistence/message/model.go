@@ -5,7 +5,7 @@ import "time"
 // MessageModel 映射 user_message 表，记录用户站内通知。
 type MessageModel struct {
 	ID      int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	UserID  int64  `gorm:"column:user_id;not null;index:idx_user_read_created,priority:1;uniqueIndex:uk_user_event,priority:1;uniqueIndex:uk_user_idempotency,priority:1"`
+	UserID  int64  `gorm:"column:user_id;not null;index:idx_user_read_created,priority:1;index:idx_user_created,priority:1;uniqueIndex:uk_user_event,priority:1;uniqueIndex:uk_user_idempotency,priority:1"`
 	Type    string `gorm:"column:type;size:16;not null"`
 	Title   string `gorm:"column:title;size:128;not null"`
 	Content string `gorm:"column:content;size:1024;not null"`

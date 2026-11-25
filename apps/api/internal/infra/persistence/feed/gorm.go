@@ -7,6 +7,7 @@ import (
 	domainvideo "GCFeed/internal/domain/video"
 	"context"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -130,6 +131,19 @@ func (r *Repository) ListFollowingPage(ctx context.Context, viewerID int64, curs
 		return nil, err
 	}
 	return feedPageItemsFromModels(models), nil
+}
+
+// ListFollowingAuthorIDs 查询当前用户关注的全部作者 ID，用于校验 Redis inbox 取关残留。
+func (r *Repository) ListFollowingAuthorIDs(ctx context.Context, viewerID int64) ([]int64, error) {
+	var authorIDs []int64
+	err := r.db.WithContext(ctx).
+		Table("user_follow").
+		Select("target_user_id").
+		Where("user_id = ? AND status = ?", viewerID, domainrelation.FollowStatusActive).
+		Order("target_user_id ASC").
+		Scan(&authorIDs).
+		Error
+	return authorIDs, err
 }
 
 func (r *Repository) ListFollowingPullAuthorIDs(ctx context.Context, viewerID int64) ([]int64, error) {
@@ -275,7 +289,7 @@ func (r *Repository) BatchGetViewerActionStates(ctx context.Context, viewerID in
 			state = &domainfeed.ViewerActionState{VideoID: model.VideoID}
 			states[model.VideoID] = state
 		}
-		switch model.ActionType {
+		switch strings.ToUpper(strings.TrimSpace(model.ActionType)) {
 		case domaininteraction.ActionTypeLike:
 			state.Liked = true
 		case domaininteraction.ActionTypeFavorite:

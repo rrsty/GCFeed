@@ -470,3 +470,22 @@ func cloneRecommendationExposure(exposure *domainrecommendation.Exposure) *domai
 func recommendationExposureKey(userID int64, videoID int64) string {
 	return fmt.Sprintf("%d:%d", userID, videoID)
 }
+
+func TestRecommendationRejectsNonPositiveLimitAndPreservesMultiUserExposures(t *testing.T) {
+	router := newRecommendationRouter()
+	badLimit := performJSONRequest(router, http.MethodPost, "/internal/recommendation-candidates", `{"user_id":42,"scene":"recommend","limit":0}`, "")
+	requireStatus(t, badLimit, http.StatusBadRequest)
+
+	repo := newMemoryRecommendationRepo()
+	service := applicationrecommendation.New(repo)
+	res, err := service.SaveExposures(context.Background(), []applicationrecommendation.ExposureInput{
+		{UserID: 42, VideoID: 1, Scene: "recommend", RequestID: "r1"},
+		{UserID: 43, VideoID: 1, Scene: "recommend", RequestID: "r1"},
+	})
+	if err != nil {
+		t.Fatalf("SaveExposures: %v", err)
+	}
+	if len(res.Exposures) != 2 {
+		t.Fatalf("expected both users' exposures for same video preserved, got %+v", res.Exposures)
+	}
+}

@@ -63,9 +63,6 @@ func (r *Repository) FindByAccount(ctx context.Context, account string) (*domain
 		Table("account AS a").
 		Select(userWithStatSelect()).
 		Joins("LEFT JOIN user_relation_stat AS rs ON rs.user_id = a.id").
-		Joins("LEFT JOIN (SELECT user_id, COUNT(*) AS following_count FROM user_follow WHERE status = 1 GROUP BY user_id) AS active_following ON active_following.user_id = a.id").
-		Joins("LEFT JOIN (SELECT target_user_id, COUNT(*) AS follower_count FROM user_follow WHERE status = 1 GROUP BY target_user_id) AS active_followers ON active_followers.target_user_id = a.id").
-		Joins("LEFT JOIN (SELECT author_id, COUNT(*) AS work_count FROM video WHERE status = 2 GROUP BY author_id) AS published_works ON published_works.author_id = a.id").
 		Where("a.account = ?", account).
 		Take(&user).
 		Error
@@ -76,6 +73,11 @@ func (r *Repository) FindByAccount(ctx context.Context, account string) (*domain
 		return nil, err
 	}
 
+	workCount, err := r.countPublishedWorks(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	user.WorkCount = workCount
 	return restoreUser(user), nil
 }
 
@@ -86,9 +88,6 @@ func (r *Repository) FindByID(ctx context.Context, id int64) (*domainaccount.Use
 		Table("account AS a").
 		Select(userWithStatSelect()).
 		Joins("LEFT JOIN user_relation_stat AS rs ON rs.user_id = a.id").
-		Joins("LEFT JOIN (SELECT user_id, COUNT(*) AS following_count FROM user_follow WHERE status = 1 GROUP BY user_id) AS active_following ON active_following.user_id = a.id").
-		Joins("LEFT JOIN (SELECT target_user_id, COUNT(*) AS follower_count FROM user_follow WHERE status = 1 GROUP BY target_user_id) AS active_followers ON active_followers.target_user_id = a.id").
-		Joins("LEFT JOIN (SELECT author_id, COUNT(*) AS work_count FROM video WHERE status = 2 GROUP BY author_id) AS published_works ON published_works.author_id = a.id").
 		Where("a.id = ?", id).
 		Take(&user).
 		Error
@@ -99,7 +98,23 @@ func (r *Repository) FindByID(ctx context.Context, id int64) (*domainaccount.Use
 		return nil, err
 	}
 
+	workCount, err := r.countPublishedWorks(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	user.WorkCount = workCount
 	return restoreUser(user), nil
+}
+
+// countPublishedWorks 按 (author_id, status) 复合索引单点统计作者已发布作品数，避免全表 GROUP BY。
+func (r *Repository) countPublishedWorks(ctx context.Context, authorID int64) (int, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Table("video").
+		Where("author_id = ? AND status = 2", authorID).
+		Count(&count).
+		Error
+	return int(count), err
 }
 
 // UpdateProfile 只更新资料字段，账号、密码、角色等字段保持原值。
@@ -139,7 +154,7 @@ func restoreUser(user userWithStatModel) *domainaccount.User {
 }
 
 func userWithStatSelect() string {
-	return "a.id, a.account, a.password, a.nickname, a.avatar_url, a.bio, a.status, a.role, COALESCE(active_following.following_count, rs.following_count, 0) AS following_count, COALESCE(active_followers.follower_count, rs.follower_count, 0) AS follower_count, COALESCE(published_works.work_count, 0) AS work_count"
+	return "a.id, a.account, a.password, a.nickname, a.avatar_url, a.bio, a.status, a.role, COALESCE(rs.following_count, 0) AS following_count, COALESCE(rs.follower_count, 0) AS follower_count"
 }
 
 // isDuplicateKeyError 兼容 GORM 标准错误和 MySQL 1062 唯一键冲突。

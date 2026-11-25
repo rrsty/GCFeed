@@ -153,7 +153,8 @@ func HTTPMiddleware() gin.HandlerFunc {
 
 		route := c.FullPath()
 		if route == "" {
-			route = c.Request.URL.Path
+			// 未匹配路由统一收敛为固定标签，防止 404 随机路径造成 Prometheus 高基数内存爆炸。
+			route = "unmatched"
 		}
 		status := strconv.Itoa(c.Writer.Status())
 		method := c.Request.Method

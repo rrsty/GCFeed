@@ -2,9 +2,9 @@ import http from "k6/http";
 import { check, sleep } from "k6";
 import { Rate } from "k6/metrics";
 
-// 配置参数（可通过命令行环境变量覆盖，例如 -e SCENE=hot -e VUS=50）
-const BASE_URL = (__ENV.BASE_URL || "http://127.0.0.1:8080").replace(/\/$/, "");
-const SCENE = __ENV.SCENE || "timeline"; // 可选: timeline (最新流), hot (热门流), recommend (推荐流)
+// 配置参数（可通过命令行环境变量覆盖，例如 -e SCENE=hot -e VUS=50 -e BASE_URL=http://127.0.0.1:8088）
+const BASE_URL = (__ENV.BASE_URL || "http://127.0.0.1:8088").replace(/\/$/, "");
+const SCENE = __ENV.SCENE || "timeline"; // 可选: timeline (最新流), hot (热门流), following (关注流), recommend (推荐流)
 const LIMIT = Number(__ENV.LIMIT || 10);
 const THINK_TIME = Number(__ENV.THINK_TIME !== undefined ? __ENV.THINK_TIME : 1); // 思考时间(秒)，极限压测设为 0
 const ACCOUNT = __ENV.ACCOUNT || "test_user_1";
@@ -22,9 +22,9 @@ export const options = {
   },
 };
 
-// setup 在压测开始前执行一次（如果是推荐流，则登录获取 Token）
+// setup 在压测开始前执行一次（推荐流或关注流需要登录获取 Token）
 export function setup() {
-  if (SCENE === "recommend") {
+  if (SCENE === "recommend" || SCENE === "following") {
     const res = http.post(
       `${BASE_URL}/api/sessions`,
       JSON.stringify({ account: ACCOUNT, password: PASSWORD }),
@@ -57,6 +57,10 @@ export default function (data) {
         },
       }
     );
+  } else if (SCENE === "following") {
+    res = http.get(`${BASE_URL}/api/feed-items?scene=following&limit=${LIMIT}`, {
+      headers: { Authorization: `Bearer ${data.token}` },
+    });
   } else {
     // 最新流 (timeline) 或 热门流 (hot) 是 GET 请求
     res = http.get(`${BASE_URL}/api/feed-items?scene=${encodeURIComponent(SCENE)}&limit=${LIMIT}`);

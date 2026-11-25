@@ -121,19 +121,21 @@ GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业�
 # 进入工程应用目录
 cd apps
 
-# 构建并启动全部容器（MySQL、Redis、RabbitMQ、API、Worker、Web、Prometheus、Grafana）
+# 构建并启动全部容器（MySQL、Redis、RabbitMQ、自动数据初始化 Seed、API、Worker、Web、Prometheus、Grafana）
 docker compose up -d --build
 ```
+
+> **自动数据填充**：容器编排已内置 `seed` 初始化任务。在 MySQL 健康检查通过后，会自动注入 20 个测试创作者、100 条带封面/播放流的测试视频、特征向量及点赞/关注数据，服务启动完毕后即可开箱即用。
 
 #### 服务入口映射
 
 | 服务名称 | 访问地址 | 说明 / 默认凭据 |
 | :--- | :--- | :--- |
 | **Web 客户端** | `http://127.0.0.1:5173` | 短视频浏览、播放与互动前端 |
-| **API 健康探针** | `http://127.0.0.1:8080/health` | 状态探活检查 |
-| **API 指标端点** | `http://127.0.0.1:8080/metrics` | Prometheus 采集入口 |
-| **MySQL 数据库** | `127.0.0.1:3307` | 用户: `root` / 密码: `123456` |
-| **Redis 缓存** | `127.0.0.1:6379` | 端口直连 |
+| **API 健康探针** | `http://127.0.0.1:8088/health` | 状态探活检查 |
+| **API 指标端点** | `http://127.0.0.1:8088/metrics` | Prometheus 采集入口 |
+| **MySQL 数据库** | `127.0.0.1:3308` | 用户: `root` / 密码: `123456` |
+| **Redis 缓存** | `127.0.0.1:6381` | 端口直连 |
 | **RabbitMQ 管理台** | `http://127.0.0.1:15672` | 账号: `guest` / 密码: `guest` |
 | **Prometheus** | `http://127.0.0.1:9090` | 监控指标查询 |
 | **Grafana Dashboard**| `http://127.0.0.1:3000` | 账号: `admin` / 密码: `admin` |

@@ -8,6 +8,7 @@ import (
 	inframetrics "GCFeed/internal/infra/metrics"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -22,38 +23,136 @@ const hotMinuteBucketTTL = 2 * time.Hour
 const hotWindowCacheTTL = 2 * time.Minute
 const actionStateTTL = 30 * 24 * time.Hour
 const actionStatTTL = 24 * time.Hour
-const actionStatJSONTTL = 15 * time.Second
-const actionStatCounterShardCount = 16
+const commentStatDefaultTTL = 15 * time.Second
 const followingIndexKeyTTL = 30 * 24 * time.Hour
 
-type redisWatchCmdable interface {
+// setActionStateScript 在 Redis 单线程内原子执行：幂等校验 -> 状态切换 -> 单 Hash 计数更新，
+// 替代容易冲突的 WATCH 乐观锁与多套缓存（base + shard + json）结构。
+var setActionStateScript = redis.NewScript(`
+local actionKey = KEYS[1]
+local statKey = KEYS[2]
+
+local targetStatus = tonumber(ARGV[1])
+local idemKey = ARGV[2]
+local updatedAt = ARGV[3]
+local actionTTL = tonumber(ARGV[4])
+local statTTL = tonumber(ARGV[5])
+local field = ARGV[6]
+local initLike = tonumber(ARGV[7]) or 0
+local initComment = tonumber(ARGV[8]) or 0
+local initFav = tonumber(ARGV[9]) or 0
+local hasInitAction = tonumber(ARGV[10]) or 0
+local initActionActive = tonumber(ARGV[11]) or 0
+
+local storedStatusStr = redis.call("HGET", actionKey, "status")
+local storedIdem = redis.call("HGET", actionKey, "idempotency_key") or ""
+
+local storedStatus = 0
+if storedStatusStr then
+	storedStatus = tonumber(storedStatusStr) or 0
+end
+
+local effectiveStatus = targetStatus
+local delta = 0
+
+if idemKey ~= "" and storedIdem == idemKey and storedStatus ~= 0 then
+	effectiveStatus = storedStatus
+	delta = 0
+else
+	if storedStatus == 0 then
+		if hasInitAction == 1 then
+			if initActionActive == 1 and targetStatus ~= 1 then
+				delta = -1
+			elseif initActionActive == 0 and targetStatus == 1 then
+				delta = 1
+			end
+		elseif targetStatus == 1 then
+			delta = 1
+		end
+	elseif storedStatus ~= targetStatus then
+		if targetStatus == 1 then
+			delta = 1
+		else
+			delta = -1
+		end
+	end
+end
+
+redis.call("HSET", actionKey,
+	"status", tostring(effectiveStatus),
+	"idempotency_key", idemKey,
+	"updated_at", updatedAt
+)
+redis.call("EXPIRE", actionKey, actionTTL)
+
+if redis.call("EXISTS", statKey) == 0 then
+	redis.call("HSET", statKey,
+		"like_count", tostring(initLike),
+		"comment_count", tostring(initComment),
+		"favorite_count", tostring(initFav)
+	)
+end
+
+if delta ~= 0 then
+	local cur = tonumber(redis.call("HGET", statKey, field) or "0") or 0
+	local nextVal = cur + delta
+	if nextVal < 0 then
+		nextVal = 0
+	end
+	redis.call("HSET", statKey, field, tostring(nextVal))
+end
+
+local curTTL = redis.call("TTL", statKey)
+if curTTL < statTTL then
+	redis.call("EXPIRE", statKey, statTTL)
+end
+
+local likeCount = tonumber(redis.call("HGET", statKey, "like_count") or "0") or 0
+local commentCount = tonumber(redis.call("HGET", statKey, "comment_count") or "0") or 0
+local favCount = tonumber(redis.call("HGET", statKey, "favorite_count") or "0") or 0
+
+return {effectiveStatus, delta, likeCount, commentCount, favCount}
+`)
+
+// syncCommentStatScript 在评论增删时安全同步单 Hash 计数：
+// 若 statKey 已存在，仅更新 comment_count，保留未落库的异步 like_count/favorite_count 增量。
+var syncCommentStatScript = redis.NewScript(`
+local statKey = KEYS[1]
+local likeCount = tonumber(ARGV[1]) or 0
+local commentCount = tonumber(ARGV[2]) or 0
+local favCount = tonumber(ARGV[3]) or 0
+local statTTL = tonumber(ARGV[4]) or 15
+
+if redis.call("EXISTS", statKey) == 1 then
+	redis.call("HSET", statKey, "comment_count", tostring(commentCount))
+	local curTTL = redis.call("TTL", statKey)
+	if curTTL >= 0 and curTTL < statTTL then
+		redis.call("EXPIRE", statKey, statTTL)
+	end
+else
+	redis.call("HSET", statKey,
+		"like_count", tostring(likeCount),
+		"comment_count", tostring(commentCount),
+		"favorite_count", tostring(favCount)
+	)
+	redis.call("EXPIRE", statKey, statTTL)
+end
+return 1
+`)
+
+type redisFeedClient interface {
 	redis.Cmdable
+	redis.Scripter
 	Pipeline() redis.Pipeliner
-	Watch(ctx context.Context, fn func(*redis.Tx) error, keys ...string) error
 }
 
-type redisActionStatReader interface {
-	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
-	Get(ctx context.Context, key string) *redis.StringCmd
-}
-
-type redisActionStatWriter interface {
-	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
-}
-
-type redisStatCacheClient interface {
-	redisActionStatReader
-	redisActionStatWriter
-	MGet(ctx context.Context, keys ...string) *redis.SliceCmd
-}
-
-// FeedCache 使用 Redis 保存 Feed 查询结果。
+// FeedCache 使用 Redis 保存 Feed 页、卡片、单 Hash 实时互动计数与关注流索引。
 type FeedCache struct {
-	client redisWatchCmdable
+	client redisFeedClient
 }
 
 // NewFeedCache 创建 Feed 结果缓存。
-func NewFeedCache(client redisWatchCmdable) *FeedCache {
+func NewFeedCache(client redisFeedClient) *FeedCache {
 	return &FeedCache{client: client}
 }
 
@@ -154,55 +253,41 @@ func (c *FeedCache) DeleteCard(ctx context.Context, videoID int64) error {
 	return err
 }
 
-// GetStats 批量读取视频计数缓存。
+// GetStats 通过单次 Pipeline 批量读取单 Hash 互动计数缓存（video:stat:v2:{id}）。
 func (c *FeedCache) GetStats(ctx context.Context, videoIDs []int64) (map[int64]*domainfeed.FeedStat, error) {
-	return getStats(ctx, c.client, videoIDs)
-}
-
-func getStats(ctx context.Context, client redisStatCacheClient, videoIDs []int64) (map[int64]*domainfeed.FeedStat, error) {
 	stats := map[int64]*domainfeed.FeedStat{}
 	if len(videoIDs) == 0 {
 		return stats, nil
 	}
 
-	values, err := client.MGet(ctx, cacheKeys(videoIDs, feedStatKey)...).Result()
-	if err != nil {
+	pipe := c.client.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, 0, len(videoIDs))
+	for _, videoID := range videoIDs {
+		cmds = append(cmds, pipe.HGetAll(ctx, feedStatHashKey(videoID)))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		inframetrics.ObserveCacheRead("stat", len(videoIDs), 0, err)
 		return nil, err
 	}
-	for index, value := range values {
-		content, ok := cacheValueBytes(value)
-		if !ok {
-			continue
-		}
-		var stat domainfeed.FeedStat
-		if err := json.Unmarshal(content, &stat); err != nil {
-			continue
-		}
-		if stat.VideoID <= 0 {
-			stat.VideoID = videoIDs[index]
-		}
-		stats[stat.VideoID] = &stat
-	}
-	for _, videoID := range videoIDs {
-		if stats[videoID] != nil {
-			continue
-		}
-		stat, ok, err := actionStatFromCache(ctx, client, videoID)
-		if err != nil {
+
+	for index, cmd := range cmds {
+		values, err := cmd.Result()
+		if err != nil && err != redis.Nil {
+			inframetrics.ObserveCacheRead("stat", len(videoIDs), 0, err)
 			return nil, err
 		}
-		if !ok {
+		if len(values) == 0 {
 			continue
 		}
-		stats[videoID] = stat
-		_ = setActionStatJSON(ctx, client, feedStatKey(videoID), stat)
+		stat := &domainfeed.FeedStat{VideoID: videoIDs[index]}
+		applyActionStatFields(stat, values)
+		stats[stat.VideoID] = stat
 	}
 	inframetrics.ObserveCacheRead("stat", len(videoIDs), len(stats), nil)
 	return stats, nil
 }
 
-// SetStats 批量写入视频计数缓存。
+// SetStats 使用 HSetNX 批量回填缺失的视频计数 Hash，避免并发回源覆盖刚写入的异步点赞增量。
 func (c *FeedCache) SetStats(ctx context.Context, stats map[int64]*domainfeed.FeedStat, ttl time.Duration) error {
 	pipe := c.client.Pipeline()
 	queued := false
@@ -211,11 +296,13 @@ func (c *FeedCache) SetStats(ctx context.Context, stats map[int64]*domainfeed.Fe
 		if stat == nil || stat.VideoID <= 0 {
 			continue
 		}
-		content, err := json.Marshal(stat)
-		if err != nil {
-			return err
+		key := feedStatHashKey(stat.VideoID)
+		pipe.HSetNX(ctx, key, "like_count", clampRedisCount(stat.LikeCount))
+		pipe.HSetNX(ctx, key, "comment_count", clampRedisCount(stat.CommentCount))
+		pipe.HSetNX(ctx, key, "favorite_count", clampRedisCount(stat.FavoriteCount))
+		if ttl > 0 {
+			pipe.Expire(ctx, key, ttl)
 		}
-		pipe.Set(ctx, feedStatKey(stat.VideoID), content, ttl)
 		queued = true
 	}
 	if !queued {
@@ -226,46 +313,193 @@ func (c *FeedCache) SetStats(ctx context.Context, stats map[int64]*domainfeed.Fe
 	return err
 }
 
-// SetVideoStat 写入单个视频的计数缓存，用于评论写入后刷新 Feed 展示。
+// SetVideoStat 同步单个视频的评论数到单 Hash 缓存：若 Hash 已存在则只更新 comment_count，不覆盖异步点赞/收藏计数。
 func (c *FeedCache) SetVideoStat(ctx context.Context, stat *domaininteraction.VideoStat) error {
 	if stat == nil || stat.VideoID <= 0 {
 		return nil
 	}
-	err := setActionStatJSON(ctx, c.client, feedStatKey(stat.VideoID), videoStatToFeedStat(stat))
+	err := syncCommentStatScript.Run(
+		ctx,
+		c.client,
+		[]string{feedStatHashKey(stat.VideoID)},
+		clampRedisCount(stat.LikeCount),
+		clampRedisCount(stat.CommentCount),
+		clampRedisCount(stat.FavoriteCount),
+		int64(commentStatDefaultTTL.Seconds()),
+	).Err()
 	inframetrics.ObserveCacheWrite("stat", 1, err)
 	return err
 }
 
-func videoStatToFeedStat(stat *domaininteraction.VideoStat) *domainfeed.FeedStat {
-	if stat == nil {
-		return nil
+// HasActionState 检查指定用户的点赞/收藏状态是否已存在于 Redis 缓存中，便于应用层按需回源 DB。
+func (c *FeedCache) HasActionState(ctx context.Context, userID int64, videoID int64, actionType string) (bool, error) {
+	normalized, err := domaininteraction.NormalizeActionType(actionType)
+	if err != nil {
+		return false, err
 	}
-	return &domainfeed.FeedStat{
-		VideoID:       stat.VideoID,
-		LikeCount:     stat.LikeCount,
-		CommentCount:  stat.CommentCount,
-		FavoriteCount: stat.FavoriteCount,
+	exists, err := c.client.Exists(ctx, interactionActionKey(userID, videoID, normalized)).Result()
+	if err != nil {
+		return false, err
 	}
+	return exists > 0, nil
+}
+
+// GetViewerActionStates 批量读取用户在 Redis 中的实时点赞/收藏状态，保障异步写后立即可见的读己之写一致性。
+func (c *FeedCache) GetViewerActionStates(ctx context.Context, viewerID int64, videoIDs []int64) (map[int64]applicationfeed.CachedViewerActionState, error) {
+	states := map[int64]applicationfeed.CachedViewerActionState{}
+	if viewerID <= 0 || len(videoIDs) == 0 {
+		return states, nil
+	}
+
+	pipe := c.client.Pipeline()
+	likeCmds := make([]*redis.StringCmd, 0, len(videoIDs))
+	favCmds := make([]*redis.StringCmd, 0, len(videoIDs))
+	for _, videoID := range videoIDs {
+		likeCmds = append(likeCmds, pipe.HGet(ctx, interactionActionKey(viewerID, videoID, domaininteraction.ActionTypeLike), "status"))
+		favCmds = append(favCmds, pipe.HGet(ctx, interactionActionKey(viewerID, videoID, domaininteraction.ActionTypeFavorite), "status"))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, err
+	}
+
+	for index, videoID := range videoIDs {
+		var entry applicationfeed.CachedViewerActionState
+		if raw, err := likeCmds[index].Result(); err == nil {
+			if status, parseErr := strconv.Atoi(raw); parseErr == nil && status > 0 {
+				entry.HasLike = true
+				entry.Liked = status == domaininteraction.ActionStatusActive
+			}
+		} else if err != redis.Nil {
+			return nil, err
+		}
+		if raw, err := favCmds[index].Result(); err == nil {
+			if status, parseErr := strconv.Atoi(raw); parseErr == nil && status > 0 {
+				entry.HasFavorite = true
+				entry.Favorited = status == domaininteraction.ActionStatusActive
+			}
+		} else if err != redis.Nil {
+			return nil, err
+		}
+		if entry.HasLike || entry.HasFavorite {
+			states[videoID] = entry
+		}
+	}
+	return states, nil
+}
+
+// SetActionState 通过单条 Redis Lua 脚本原子写入用户行为状态和单 Hash 实时计数（路线 A）。
+func (c *FeedCache) SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat, initialAction ...*domaininteraction.Action) (*applicationinteraction.ActionStateResult, error) {
+	actionType, err := domaininteraction.NormalizeActionType(actionType)
+	if err != nil {
+		return nil, err
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+
+	actionKey := interactionActionKey(userID, videoID, actionType)
+	statKey := feedStatHashKey(videoID)
+	targetStatus := domaininteraction.ActionStatusCanceled
+	if active {
+		targetStatus = domaininteraction.ActionStatusActive
+	}
+
+	initLike, initComment, initFav := 0, 0, 0
+	if initialStat != nil {
+		initLike = clampRedisCount(initialStat.LikeCount)
+		initComment = clampRedisCount(initialStat.CommentCount)
+		initFav = clampRedisCount(initialStat.FavoriteCount)
+	}
+	hasInitAction := 0
+	initActionActive := 0
+	if len(initialAction) > 0 && initialAction[0] != nil {
+		hasInitAction = 1
+		if initialAction[0].Active() {
+			initActionActive = 1
+		}
+	}
+
+	raw, err := setActionStateScript.Run(
+		ctx,
+		c.client,
+		[]string{actionKey, statKey},
+		targetStatus,
+		idempotencyKey,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		int64(actionStateTTL.Seconds()),
+		int64(actionStatTTL.Seconds()),
+		interactionStatField(actionType),
+		initLike,
+		initComment,
+		initFav,
+		hasInitAction,
+		initActionActive,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 5 {
+		return nil, errors.New("unexpected lua action state response")
+	}
+
+	effectiveStatus := sliceInt(raw[0])
+	delta := sliceInt(raw[1])
+	likeCount := clampRedisCount(sliceInt(raw[2]))
+	favCount := clampRedisCount(sliceInt(raw[4]))
+
+	return &applicationinteraction.ActionStateResult{
+		VideoID:        videoID,
+		ActionType:     actionType,
+		Active:         effectiveStatus == domaininteraction.ActionStatusActive,
+		LikeCount:      likeCount,
+		FavoriteCount:  favCount,
+		Delta:          delta,
+		IdempotencyKey: idempotencyKey,
+	}, nil
 }
 
 func (c *FeedCache) AddInboxItems(ctx context.Context, authorID int64, userIDs []int64, item *domainfeed.FeedPageItem, maxLen int64) error {
-	if authorID <= 0 || item == nil || item.VideoID <= 0 || item.PublishedAt.IsZero() || len(userIDs) == 0 {
+	if item == nil {
+		return nil
+	}
+	return c.AddInboxItemsBatch(ctx, authorID, userIDs, []*domainfeed.FeedPageItem{item}, maxLen)
+}
+
+// AddInboxItemsBatch 使用单次 Pipeline 批量将多条视频写入粉丝 inbox，避免关注回填产生 N 次 RTT。
+func (c *FeedCache) AddInboxItemsBatch(ctx context.Context, authorID int64, userIDs []int64, items []*domainfeed.FeedPageItem, maxLen int64) error {
+	if authorID <= 0 || len(userIDs) == 0 || len(items) == 0 {
 		return nil
 	}
 	if maxLen <= 0 {
 		maxLen = 1000
 	}
+
+	members := make([]redis.Z, 0, len(items))
+	for _, item := range items {
+		if item == nil || item.VideoID <= 0 || item.PublishedAt.IsZero() {
+			continue
+		}
+		members = append(members, redis.Z{
+			Score:  followingIndexScore(item.PublishedAt, item.VideoID),
+			Member: followingIndexMember(item.VideoID, authorID, item.PublishedAt),
+		})
+	}
+	if len(members) == 0 {
+		return nil
+	}
+
 	pipe := c.client.Pipeline()
-	score := followingIndexScore(item.PublishedAt, item.VideoID)
-	member := followingIndexMember(item.VideoID, authorID, item.PublishedAt)
+	queued := false
 	for _, userID := range userIDs {
 		if userID <= 0 {
 			continue
 		}
 		key := followingInboxKey(userID)
-		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: member})
+		pipe.ZAdd(ctx, key, members...)
 		pipe.ZRemRangeByRank(ctx, key, 0, -maxLen-1)
 		pipe.Expire(ctx, key, followingIndexKeyTTL)
+		queued = true
+	}
+	if !queued {
+		return nil
 	}
 	_, err := pipe.Exec(ctx)
 	return err
@@ -289,12 +523,14 @@ func (c *FeedCache) AddAuthorOutboxItem(ctx context.Context, authorID int64, ite
 	return err
 }
 
-func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, authorIDs []int64, cursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, bool, error) {
+// ListFollowingIndexPage 合并用户 inbox 与大 V author outbox：
+// pullAuthorIDs 仅用于拉取大 V 的 outbox，followedAuthorIDs 为当前全部已关注作者，用于校验并批量清理 inbox 取关残留。
+func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, pullAuthorIDs []int64, followedAuthorIDs []int64, cursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, bool, error) {
 	if viewerID <= 0 || limit <= 0 {
 		return []*domainfeed.FeedPageItem{}, false, nil
 	}
 	keys := []string{followingInboxKey(viewerID)}
-	for _, authorID := range authorIDs {
+	for _, authorID := range pullAuthorIDs {
 		if authorID > 0 {
 			keys = append(keys, followingAuthorOutboxKey(authorID))
 		}
@@ -306,14 +542,16 @@ func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, 
 	minScore := "-inf"
 	maxScore := "+inf"
 	if cursor != nil {
-		maxScore = fmt.Sprintf("(%f", followingIndexScore(cursor.PublishedAt, cursor.VideoID))
+		// 使用闭区间拉取并由应用层按 (PublishedAt, VideoID) 精确过滤，避免同毫秒或大 ID 分数冲突导致漏项。
+		maxScore = strconv.FormatFloat(followingIndexScore(cursor.PublishedAt, cursor.VideoID), 'f', 0, 64)
 	}
+	fetchCount := int64(limit*2 + 10)
 	for _, key := range keys {
 		cardinalityCommands = append(cardinalityCommands, pipe.ZCard(ctx, key))
 		rangeCommands = append(rangeCommands, pipe.ZRevRangeByScore(ctx, key, &redis.ZRangeBy{
 			Min:   minScore,
 			Max:   maxScore,
-			Count: int64(limit),
+			Count: fetchCount,
 		}))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
@@ -336,7 +574,12 @@ func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, 
 	}
 
 	seen := map[int64]struct{}{}
-	allowedAuthors := int64Set(authorIDs)
+	allowedAuthors := int64Set(followedAuthorIDs)
+	for _, authorID := range pullAuthorIDs {
+		allowedAuthors[authorID] = struct{}{}
+	}
+	checkFollowed := followedAuthorIDs != nil
+	staleInboxMembers := make([]any, 0)
 	items := make([]*domainfeed.FeedPageItem, 0, limit*len(rangeCommands))
 	for commandIndex, cmd := range rangeCommands {
 		members, err := cmd.Result()
@@ -348,18 +591,16 @@ func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, 
 			if !ok {
 				continue
 			}
-			// 针对 inbox 和 outbox 均校验当前关注关系，取关作者内容不再展示并异步清理 inbox 残留
-			if item.AuthorID > 0 {
+			// 针对 inbox 校验全量关注关系，取关作者的内容不再展示并合并批量异步清理。
+			if checkFollowed && item.AuthorID > 0 {
 				if _, followed := allowedAuthors[item.AuthorID]; !followed {
 					if commandIndex == 0 {
-						go func(vID int64, mem string) {
-							_ = c.client.ZRem(context.Background(), followingInboxKey(vID), mem).Err()
-						}(viewerID, member)
+						staleInboxMembers = append(staleInboxMembers, member)
 					}
 					continue
 				}
 			}
-			// 应用层依据 (PublishedAt, VideoID) 全序过滤游标，杜绝 score 截断/冲突造成的漏项或重复
+			// 应用层依据 (PublishedAt, VideoID) 全序过滤游标，杜绝分数截断/冲突造成的漏项或重复。
 			if cursor != nil {
 				if !item.PublishedAt.Before(cursor.PublishedAt) &&
 					!(item.PublishedAt.Equal(cursor.PublishedAt) && item.VideoID < cursor.VideoID) {
@@ -373,6 +614,16 @@ func (c *FeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, 
 			items = append(items, item)
 		}
 	}
+
+	if len(staleInboxMembers) > 0 {
+		inboxKey := followingInboxKey(viewerID)
+		go func(key string, stale []any) {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			_ = c.client.ZRem(cleanupCtx, key, stale...).Err()
+		}(inboxKey, staleInboxMembers)
+	}
+
 	sortFeedPageItemsByTimeline(items)
 	if len(items) > limit {
 		items = items[:limit]
@@ -456,278 +707,32 @@ func (c *FeedCache) listHotWindowPage(ctx context.Context, windowKey string, off
 	return items, nil
 }
 
-// SetActionState 写入 Redis 行为状态和实时计数，供点赞收藏接口快速返回。
-func (c *FeedCache) SetActionState(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, initialStat *domaininteraction.VideoStat, initialAction ...*domaininteraction.Action) (*applicationinteraction.ActionStateResult, error) {
-	actionType, err := domaininteraction.NormalizeActionType(actionType)
-	if err != nil {
-		return nil, err
-	}
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-
-	actionKey := interactionActionKey(userID, videoID, actionType)
-	counterBaseKey := interactionStatCounterBaseKey(videoID)
-	counterShardKey := interactionStatCounterShardKey(videoID, interactionStatCounterShardIndex(userID))
-	jsonKey := feedStatKey(videoID)
-	targetStatus := domaininteraction.ActionStatusCanceled
-	if active {
-		targetStatus = domaininteraction.ActionStatusActive
-	}
-
-	var result *applicationinteraction.ActionStateResult
-	err = c.client.Watch(ctx, func(tx *redis.Tx) error {
-		values, err := tx.HGetAll(ctx, actionKey).Result()
-		if err != nil {
-			return err
-		}
-
-		storedStatus, _ := strconv.Atoi(values["status"])
-		storedIDKey := values["idempotency_key"]
-		effectiveActive := active
-		effectiveStatus := targetStatus
-		delta := 0
-		if storedIDKey == idempotencyKey && idempotencyKey != "" {
-			effectiveActive = storedStatus == domaininteraction.ActionStatusActive
-			effectiveStatus = storedStatus
-			delta = 0
-		} else {
-			if storedStatus == 0 {
-				// 缓存缺失时使用回源行为状态纠偏（避免已点赞因缓存淘汰而在取消时被误判为无需变更）
-				if len(initialAction) > 0 && initialAction[0] != nil {
-					if initialAction[0].Active() {
-						if !active {
-							delta = -1
-						}
-					} else {
-						if active {
-							delta = 1
-						}
-					}
-				} else if active {
-					delta = 1
-				}
-			} else if storedStatus != targetStatus {
-				if active {
-					delta = 1
-				} else {
-					delta = -1
-				}
-			}
-		}
-
-		baseStat := actionStatBaseInit(videoID, initialStat)
-
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.HSet(ctx, actionKey, map[string]any{
-				"status":          effectiveStatus,
-				"idempotency_key": idempotencyKey,
-				"updated_at":      time.Now().UTC().Format(time.RFC3339Nano),
-			})
-			pipe.Expire(ctx, actionKey, actionStateTTL)
-			queueActionStatBaseInit(ctx, pipe, counterBaseKey, baseStat)
-			pipe.Expire(ctx, counterBaseKey, actionStatTTL)
-			if delta != 0 {
-				pipe.HIncrBy(ctx, counterShardKey, interactionStatField(actionType), int64(delta))
-			}
-			// 统一刷新所有分片计数 TTL，保证 Base 与 Shards 生命周期同步，杜绝孤立分片过期丢失增量
-			for _, shardKey := range interactionStatCounterShardKeys(videoID) {
-				pipe.Expire(ctx, shardKey, actionStatTTL)
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-
-		result = &applicationinteraction.ActionStateResult{
-			VideoID:        videoID,
-			ActionType:     actionType,
-			Active:         effectiveActive,
-			Delta:          delta,
-			IdempotencyKey: idempotencyKey,
-		}
-		return nil
-	}, actionKey)
-	if err != nil {
-		return nil, err
-	}
-
-	stat, err := actionStat(ctx, c.client, counterBaseKey, interactionStatCounterShardKeys(videoID), jsonKey, videoID, initialStat)
-	if err != nil {
-		return nil, err
-	}
-	result.LikeCount = stat.LikeCount
-	result.FavoriteCount = stat.FavoriteCount
-	_ = setActionStatJSON(ctx, c.client, jsonKey, stat)
-	return result, nil
-}
-
-func actionStat(ctx context.Context, client redisActionStatReader, counterBaseKey string, counterShardKeys []string, jsonKey string, videoID int64, initialStat *domaininteraction.VideoStat) (*domainfeed.FeedStat, error) {
-	stat, _, err := actionStatWithPresence(ctx, client, counterBaseKey, counterShardKeys, jsonKey, videoID, initialStat)
-	if err != nil {
-		return nil, err
-	}
-	if stat == nil {
-		return &domainfeed.FeedStat{VideoID: videoID}, nil
-	}
-	return stat, nil
-}
-
-func actionStatFromCache(ctx context.Context, client redisActionStatReader, videoID int64) (*domainfeed.FeedStat, bool, error) {
-	return actionStatWithPresence(ctx, client, interactionStatCounterBaseKey(videoID), interactionStatCounterShardKeys(videoID), feedStatKey(videoID), videoID, nil)
-}
-
-func actionStatWithPresence(ctx context.Context, client redisActionStatReader, counterBaseKey string, counterShardKeys []string, jsonKey string, videoID int64, initialStat *domaininteraction.VideoStat) (*domainfeed.FeedStat, bool, error) {
-	stat := &domainfeed.FeedStat{VideoID: videoID}
-	found := false
-	values, err := client.HGetAll(ctx, counterBaseKey).Result()
-	if err != nil {
-		return nil, false, err
-	}
-	if len(values) > 0 {
-		applyActionStatFields(stat, values)
-		found = true
-	} else {
-		fallbackStat, ok, err := actionStatFallback(ctx, client, jsonKey, videoID, initialStat)
-		if err != nil {
-			return nil, false, err
-		}
-		if ok {
-			stat = fallbackStat
-			found = true
-		}
-	}
-	shardFound, err := applyActionStatShardDeltas(ctx, client, stat, counterShardKeys)
-	if err != nil {
-		return nil, false, err
-	}
-	found = found || shardFound
-	if !found {
-		return nil, false, nil
-	}
-	return stat, true, nil
-}
-
-func actionStatFallback(ctx context.Context, client redisActionStatReader, jsonKey string, videoID int64, initialStat *domaininteraction.VideoStat) (*domainfeed.FeedStat, bool, error) {
-	stat := &domainfeed.FeedStat{VideoID: videoID}
-	content, err := client.Get(ctx, jsonKey).Bytes()
-	if err == redis.Nil {
-		if initialStat != nil {
-			stat.LikeCount = initialStat.LikeCount
-			stat.CommentCount = initialStat.CommentCount
-			stat.FavoriteCount = initialStat.FavoriteCount
-			return stat, true, nil
-		}
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if err := json.Unmarshal(content, stat); err != nil {
-		return nil, false, nil
-	}
-	if stat.VideoID <= 0 {
-		stat.VideoID = videoID
-	}
-	return stat, true, nil
-}
-
-func actionStatBaseInit(videoID int64, initialStat *domaininteraction.VideoStat) *domaininteraction.VideoStat {
-	if initialStat != nil {
-		return initialStat
-	}
-	return &domaininteraction.VideoStat{VideoID: videoID}
-}
-
-func queueActionStatBaseInit(ctx context.Context, pipe redis.Pipeliner, counterBaseKey string, initialStat *domaininteraction.VideoStat) {
-	stat := &domaininteraction.VideoStat{}
-	if initialStat != nil {
-		stat = initialStat
-	}
-	pipe.HSetNX(ctx, counterBaseKey, "like_count", stat.LikeCount)
-	pipe.HSetNX(ctx, counterBaseKey, "comment_count", stat.CommentCount)
-	pipe.HSetNX(ctx, counterBaseKey, "favorite_count", stat.FavoriteCount)
-}
-
-func setActionStatJSON(ctx context.Context, client redisActionStatWriter, jsonKey string, stat *domainfeed.FeedStat) error {
-	content, err := json.Marshal(stat)
-	if err != nil {
-		return err
-	}
-	return client.Set(ctx, jsonKey, content, actionStatJSONTTL).Err()
-}
-
-func applyActionStatShardDeltas(ctx context.Context, client redisActionStatReader, stat *domainfeed.FeedStat, shardKeys []string) (bool, error) {
-	if stat == nil || len(shardKeys) == 0 {
-		return false, nil
-	}
-
-	shardValues, err := loadActionStatShardValues(ctx, client, shardKeys)
-	if err != nil {
-		return false, err
-	}
-	found := false
-	likeDelta := 0
-	favoriteDelta := 0
-	for _, values := range shardValues {
-		if len(values) > 0 {
-			found = true
-		}
-		likeDelta += actionStatFieldInt(values, "like_count")
-		favoriteDelta += actionStatFieldInt(values, "favorite_count")
-	}
-	stat.LikeCount = clampRedisCount(stat.LikeCount + likeDelta)
-	stat.FavoriteCount = clampRedisCount(stat.FavoriteCount + favoriteDelta)
-	return found, nil
-}
-
-func loadActionStatShardValues(ctx context.Context, client redisActionStatReader, shardKeys []string) ([]map[string]string, error) {
-	type pipelineProvider interface {
-		Pipeline() redis.Pipeliner
-	}
-
-	if provider, ok := client.(pipelineProvider); ok {
-		pipe := provider.Pipeline()
-		cmds := make([]*redis.MapStringStringCmd, 0, len(shardKeys))
-		for _, key := range shardKeys {
-			cmds = append(cmds, pipe.HGetAll(ctx, key))
-		}
-		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-			return nil, err
-		}
-		values := make([]map[string]string, 0, len(cmds))
-		for _, cmd := range cmds {
-			value, err := cmd.Result()
-			if err != nil && err != redis.Nil {
-				return nil, err
-			}
-			values = append(values, value)
-		}
-		return values, nil
-	}
-
-	values := make([]map[string]string, 0, len(shardKeys))
-	for _, key := range shardKeys {
-		value, err := client.HGetAll(ctx, key).Result()
-		if err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, nil
-}
-
 func applyActionStatFields(stat *domainfeed.FeedStat, values map[string]string) {
 	if stat == nil {
 		return
 	}
-	stat.LikeCount = actionStatFieldInt(values, "like_count")
-	stat.CommentCount = actionStatFieldInt(values, "comment_count")
-	stat.FavoriteCount = actionStatFieldInt(values, "favorite_count")
+	stat.LikeCount = clampRedisCount(actionStatFieldInt(values, "like_count"))
+	stat.CommentCount = clampRedisCount(actionStatFieldInt(values, "comment_count"))
+	stat.FavoriteCount = clampRedisCount(actionStatFieldInt(values, "favorite_count"))
 }
 
 func actionStatFieldInt(values map[string]string, field string) int {
 	value, _ := strconv.Atoi(values[field])
 	return value
+}
+
+func sliceInt(value any) int {
+	switch typed := value.(type) {
+	case int64:
+		return int(typed)
+	case int:
+		return typed
+	case string:
+		parsed, _ := strconv.Atoi(typed)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func cacheKeys(videoIDs []int64, build func(int64) string) []string {
@@ -742,8 +747,8 @@ func feedCardKey(videoID int64) string {
 	return fmt.Sprintf("video:card:v1:%d", videoID)
 }
 
-func feedStatKey(videoID int64) string {
-	return fmt.Sprintf("video:stat:v1:%d", videoID)
+func feedStatHashKey(videoID int64) string {
+	return fmt.Sprintf("video:stat:v2:%d", videoID)
 }
 
 func followingInboxKey(userID int64) string {
@@ -754,8 +759,9 @@ func followingAuthorOutboxKey(authorID int64) string {
 	return fmt.Sprintf("feed:following:author:v1:%d", authorID)
 }
 
+// followingIndexScore 保留毫秒级时间戳精度（2026 年约为 1.79e12，在 IEEE-754 float64 53 位精确整数范围内）。
 func followingIndexScore(publishedAt time.Time, videoID int64) float64 {
-	return float64(publishedAt.UTC().Unix()*1000000 + videoID%1000000)
+	return float64(publishedAt.UTC().UnixMilli())
 }
 
 func followingIndexMember(videoID int64, authorID int64, publishedAt time.Time) string {
@@ -807,33 +813,6 @@ func sortFeedPageItemsByTimeline(items []*domainfeed.FeedPageItem) {
 
 func interactionActionKey(userID int64, videoID int64, actionType string) string {
 	return fmt.Sprintf("interaction:action:v1:%d:%d:%s", userID, videoID, strings.ToLower(actionType))
-}
-
-func interactionStatCounterKey(videoID int64) string {
-	return fmt.Sprintf("video:stat:counter:v1:%d", videoID)
-}
-
-func interactionStatCounterBaseKey(videoID int64) string {
-	return fmt.Sprintf("%s:base", interactionStatCounterKey(videoID))
-}
-
-func interactionStatCounterShardKey(videoID int64, shard int) string {
-	return fmt.Sprintf("%s:shard:%02d", interactionStatCounterKey(videoID), shard)
-}
-
-func interactionStatCounterShardKeys(videoID int64) []string {
-	keys := make([]string, 0, actionStatCounterShardCount)
-	for shard := range actionStatCounterShardCount {
-		keys = append(keys, interactionStatCounterShardKey(videoID, shard))
-	}
-	return keys
-}
-
-func interactionStatCounterShardIndex(userID int64) int {
-	if userID <= 0 {
-		return 0
-	}
-	return int(userID % actionStatCounterShardCount)
 }
 
 func interactionStatField(actionType string) string {

@@ -113,8 +113,10 @@ function App() {
     [token, user]
   );
 
+  const handleNavigate = useCallback((path) => navigate(path, setRoute), []);
+
   if (route === "/auth" || route === "/login") {
-    return <LoginPage session={session} onNavigate={(path) => navigate(path, setRoute)} />;
+    return <LoginPage session={session} onNavigate={handleNavigate} />;
   }
 
   if (route === "/profile" || route === "/me") {
@@ -124,10 +126,10 @@ function App() {
         route={route}
         authenticated={Boolean(token && user)}
         unreadCount={unreadCount}
-        onNavigate={(path) => navigate(path, setRoute)}
+        onNavigate={handleNavigate}
         onLogout={() => logout(session, setRoute)}
       >
-        <ProfilePage session={session} onNavigate={(path) => navigate(path, setRoute)} />
+        <ProfilePage session={session} onNavigate={handleNavigate} />
       </AppShell>
     );
   }
@@ -140,10 +142,10 @@ function App() {
         route={route}
         authenticated={Boolean(token && user)}
         unreadCount={unreadCount}
-        onNavigate={(path) => navigate(path, setRoute)}
+        onNavigate={handleNavigate}
         onLogout={() => logout(session, setRoute)}
       >
-        <PublicProfilePage userID={publicUserID} onNavigate={(path) => navigate(path, setRoute)} />
+        <PublicProfilePage userID={publicUserID} onNavigate={handleNavigate} />
       </AppShell>
     );
   }
@@ -155,10 +157,10 @@ function App() {
         route={route}
         authenticated={Boolean(token && user)}
         unreadCount={unreadCount}
-        onNavigate={(path) => navigate(path, setRoute)}
+        onNavigate={handleNavigate}
         onLogout={() => logout(session, setRoute)}
       >
-        <UploadPage session={session} onNavigate={(path) => navigate(path, setRoute)} />
+        <UploadPage session={session} onNavigate={handleNavigate} />
       </AppShell>
     );
   }
@@ -170,10 +172,15 @@ function App() {
         route={route}
         authenticated={Boolean(token && user)}
         unreadCount={unreadCount}
-        onNavigate={(path) => navigate(path, setRoute)}
+        onNavigate={handleNavigate}
         onLogout={() => logout(session, setRoute)}
       >
-        <MessagesPage session={session} onNavigate={(path) => navigate(path, setRoute)} onUnreadChange={refreshUnreadCount} />
+        <MessagesPage
+          session={session}
+          totalUnreadCount={unreadCount}
+          onNavigate={handleNavigate}
+          onUnreadChange={refreshUnreadCount}
+        />
       </AppShell>
     );
   }
@@ -184,10 +191,10 @@ function App() {
       route={route}
       authenticated={Boolean(token && user)}
       unreadCount={unreadCount}
-      onNavigate={(path) => navigate(path, setRoute)}
+      onNavigate={handleNavigate}
       onLogout={() => logout(session, setRoute)}
     >
-      <FeedPage feedScene={feedSceneFromRoute(route)} session={session} onNavigate={(path) => navigate(path, setRoute)} />
+      <FeedPage feedScene={feedSceneFromRoute(route)} session={session} onNavigate={handleNavigate} />
     </AppShell>
   );
 }
@@ -544,7 +551,7 @@ function FeedPage({ feedScene, session, onNavigate }) {
     return () => {
       live = false;
     };
-  }, [onNavigate, session]);
+  }, [onNavigate, session.clearAuth, session.token]);
 
   useEffect(() => {
     return loadFeed();
@@ -657,6 +664,32 @@ function FeedPage({ feedScene, session, onNavigate }) {
     };
   }, [current?.video_id, feedScene, feedState, onNavigate, playbackConfig.preload_count, session.clearAuth, session.token]);
 
+  const reportViewEvent = useCallback(
+    (item, eventType, watchMs = 0, completed = false) => {
+      if (!session.token || !item?.video_id || !eventType) return;
+      const scene = item.feed_scene || feedScene;
+      const requestID = item.request_id || feedRequestID;
+      apiRequest("/api/video-view-events", {
+        method: "POST",
+        token: session.token,
+        body: {
+          video_id: item.video_id,
+          scene,
+          request_id: requestID || "",
+          event_type: eventType,
+          watch_ms: Math.max(0, Math.round(Number(watchMs || 0))),
+          completed: Boolean(completed)
+        }
+      }).catch((error) => {
+        if (error.status === 401 && requiresAuthFeed(feedScene)) {
+          session.clearAuth();
+          onNavigate("/auth");
+        }
+      });
+    },
+    [feedRequestID, feedScene, onNavigate, session.clearAuth, session.token]
+  );
+
   const reportPlaybackQoS = useCallback(
     (item, metrics) => {
       if (!session.token || !item?.video_id) return;
@@ -760,18 +793,26 @@ function FeedPage({ feedScene, session, onNavigate }) {
     }
   }, [current, following, onNavigate, requireLogin, session, swipe]);
 
+  const currentVideoID = current?.video_id || 0;
+
   const loadComments = useCallback(() => {
-    if (!current) return undefined;
+    if (!currentVideoID) return undefined;
     let live = true;
     setCommentsState("loading");
     setCommentsError("");
-    apiRequest(`/api/videos/${current.video_id}/comments?limit=50`)
+    apiRequest(`/api/videos/${currentVideoID}/comments?limit=50`)
       .then((data) => {
         if (!live) return;
         const nextComments = data.items || [];
         setComments(nextComments);
-        if (!data.has_more && nextComments.length > Number(current.comment_count || 0)) {
-          updateCurrentItem(current.video_id, { comment_count: nextComments.length });
+        if (!data.has_more) {
+          setItems((state) =>
+            state.map((item) =>
+              item.video_id === currentVideoID && nextComments.length > Number(item.comment_count || 0)
+                ? { ...item, comment_count: nextComments.length }
+                : item
+            )
+          );
         }
         setCommentsState("ready");
       })
@@ -784,7 +825,7 @@ function FeedPage({ feedScene, session, onNavigate }) {
     return () => {
       live = false;
     };
-  }, [current]);
+  }, [currentVideoID]);
 
   useEffect(() => {
     if (!commentsOpen) return undefined;
@@ -946,6 +987,13 @@ function FeedPage({ feedScene, session, onNavigate }) {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      // 在输入框/文本域输入或按下系统组合键（如 Ctrl+R/F/C）时不拦截快捷键。
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === "Escape") {
+        setCommentsOpen(false);
+        return;
+      }
+      if (isInteractiveTarget(event.target)) return;
       if (["ArrowDown", "j", "J"].includes(event.key)) {
         moveTo(Math.min(items.length - 1, index + 1));
       }
@@ -963,9 +1011,6 @@ function FeedPage({ feedScene, session, onNavigate }) {
       }
       if (event.key === "c" || event.key === "C") {
         setCommentsOpen(true);
-      }
-      if (event.key === "Escape") {
-        setCommentsOpen(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -1032,6 +1077,7 @@ function FeedPage({ feedScene, session, onNavigate }) {
                     onFavorite={setFavorite}
                     onFollow={setFollow}
                     onPlaybackQoS={reportPlaybackQoS}
+                    onViewEvent={reportViewEvent}
                     onOpenAuthor={(author) => openPublicProfile(author, onNavigate)}
                     followError={followError}
                   />
@@ -1051,6 +1097,7 @@ function FeedPage({ feedScene, session, onNavigate }) {
                   onFavorite={setFavorite}
                   onFollow={setFollow}
                   onPlaybackQoS={reportPlaybackQoS}
+                  onViewEvent={reportViewEvent}
                   onOpenAuthor={(author) => openPublicProfile(author, onNavigate)}
                   followError={followError}
                 />
@@ -1070,6 +1117,7 @@ function FeedPage({ feedScene, session, onNavigate }) {
                     onFavorite={setFavorite}
                     onFollow={setFollow}
                     onPlaybackQoS={reportPlaybackQoS}
+                    onViewEvent={reportViewEvent}
                     onOpenAuthor={(author) => openPublicProfile(author, onNavigate)}
                     followError={followError}
                   />
@@ -1126,6 +1174,7 @@ function VideoStage({
   onFavorite,
   onFollow,
   onPlaybackQoS,
+  onViewEvent,
   onOpenAuthor
 }) {
   const cover = item.cover_url || image.stage;
@@ -1134,6 +1183,8 @@ function VideoStage({
   const videoRef = useRef(null);
   const itemRef = useRef(item);
   const qosRef = useRef(createVideoQoSState(item.video_id));
+  const viewTrackRef = useRef({ videoID: item.video_id, playSent: false, completeSent: false, totalWatchMs: 0 });
+  const [progressPercent, setProgressPercent] = useState(0);
 
   useEffect(() => {
     itemRef.current = item;
@@ -1144,6 +1195,7 @@ function VideoStage({
     if (!state || !state.playingStartedAt) return;
     const watchMs = Math.max(0, Math.round(performance.now() - state.playingStartedAt));
     if (watchMs <= 0 && state.stutterCount <= 0 && state.firstFrameMs === undefined) return;
+    viewTrackRef.current.totalWatchMs += watchMs;
     onPlaybackQoS?.(itemRef.current, {
       firstFrameMs: state.firstFrameMs,
       stutterCount: state.stutterCount,
@@ -1158,13 +1210,23 @@ function VideoStage({
 
   useEffect(() => {
     qosRef.current = createVideoQoSState(item.video_id);
+    viewTrackRef.current = { videoID: item.video_id, playSent: false, completeSent: false, totalWatchMs: 0 };
+    setProgressPercent(0);
     if (active && showVideo) {
       qosRef.current.loadStartedAt = performance.now();
     }
     return () => {
       flushQoS();
+      const track = viewTrackRef.current;
+      if (active && track.videoID === itemRef.current?.video_id) {
+        if (track.totalWatchMs >= 2000 && !track.playSent && !track.completeSent) {
+          onViewEvent?.(itemRef.current, "play", track.totalWatchMs, false);
+        } else if (track.totalWatchMs > 0 && track.totalWatchMs < 2000 && !track.playSent && !track.completeSent) {
+          onViewEvent?.(itemRef.current, "skip", track.totalWatchMs, false);
+        }
+      }
     };
-  }, [active, flushQoS, item.video_id, showVideo]);
+  }, [active, flushQoS, item.video_id, onViewEvent, showVideo]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -1203,6 +1265,26 @@ function VideoStage({
     state.stutterCount += 1;
   }
 
+  function handleTimeUpdate(event) {
+    if (!active) return;
+    const video = event.currentTarget;
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+    const ratio = Math.min(1, Math.max(0, video.currentTime / video.duration));
+    setProgressPercent(Math.round(ratio * 100));
+
+    const track = viewTrackRef.current;
+    const watchMs = Math.round(video.currentTime * 1000);
+    // 上报真实播放/完播行为，驱动后端推荐兴趣向量聚合。
+    if (!track.playSent && video.currentTime >= 3) {
+      track.playSent = true;
+      onViewEvent?.(itemRef.current, "play", watchMs, false);
+    }
+    if (!track.completeSent && ratio >= 0.9) {
+      track.completeSent = true;
+      onViewEvent?.(itemRef.current, "complete", Math.round(video.duration * 1000), true);
+    }
+  }
+
   return (
     <article className="video-stage">
       <img className="stage-backdrop" src={cover} alt="" />
@@ -1221,6 +1303,7 @@ function VideoStage({
           onLoadedData={handleLoadedData}
           onPlaying={handlePlaying}
           onWaiting={handleWaiting}
+          onTimeUpdate={handleTimeUpdate}
           onPause={flushQoS}
           onEnded={flushQoS}
         />
@@ -1253,7 +1336,7 @@ function VideoStage({
         <ActionButton icon="share" label="" compact />
       </div>
       <div className="progress-track">
-        <span style={{ width: "34%" }} />
+        <span style={{ width: `${progressPercent}%` }} />
       </div>
     </article>
   );
@@ -1351,7 +1434,7 @@ function CommentMessage({ icon, title, action, onAction }) {
   );
 }
 
-function MessagesPage({ session, onNavigate, onUnreadChange }) {
+function MessagesPage({ session, totalUnreadCount = 0, onNavigate, onUnreadChange }) {
   const [items, setItems] = useState([]);
   const [nextCursor, setNextCursor] = useState("");
   const [hasMore, setHasMore] = useState(false);
@@ -1414,8 +1497,11 @@ function MessagesPage({ session, onNavigate, onUnreadChange }) {
     }
   }
 
+  const localUnreadCount = items.filter((item) => !item.is_read).length;
+  const unreadCount = Math.max(Number(totalUnreadCount || 0), localUnreadCount);
+
   async function markAllRead() {
-    if (markingAll || items.every((item) => item.is_read)) return;
+    if (markingAll || unreadCount === 0) return;
     setMarkingAll(true);
     setError("");
     try {
@@ -1434,7 +1520,6 @@ function MessagesPage({ session, onNavigate, onUnreadChange }) {
     }
   }
 
-  const unreadCount = items.filter((item) => !item.is_read).length;
   const loadingInitial = state === "loading" && items.length === 0;
   const loadingMore = state === "loadingMore";
 
@@ -1544,6 +1629,32 @@ function ProfilePage({ session, onNavigate }) {
   const [relationBusyID, setRelationBusyID] = useState(0);
   const followingCount = baseUser.following_count ?? baseUser.followingCount ?? 0;
   const followerCount = baseUser.follower_count ?? baseUser.followerCount ?? 0;
+  const workCount = baseUser.work_count ?? baseUser.workCount ?? videos.length;
+
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const onNavigateRef = useRef(onNavigate);
+  onNavigateRef.current = onNavigate;
+
+  useEffect(() => {
+    if (!session.token) return undefined;
+    let live = true;
+    apiRequest("/api/users/me", { token: session.token })
+      .then((profile) => {
+        if (live && profile) {
+          sessionRef.current.setAuth(session.token, profile);
+        }
+      })
+      .catch((error) => {
+        if (error.status === 401) {
+          sessionRef.current.clearAuth();
+          onNavigateRef.current("/auth");
+        }
+      });
+    return () => {
+      live = false;
+    };
+  }, [session.token]);
 
   useEffect(() => {
     setForm({
@@ -1578,14 +1689,14 @@ function ProfilePage({ session, onNavigate }) {
       })
       .catch((error) => {
         if (error.status === 401) {
-          session.clearAuth();
-          onNavigate("/auth");
+          sessionRef.current.clearAuth();
+          onNavigateRef.current("/auth");
           return;
         }
         setVideos([]);
         setVideosState(error.message || "作品加载失败");
       });
-  }, [onNavigate, session]);
+  }, [session.token]);
 
   useEffect(() => {
     if (!session.token) {
@@ -1606,14 +1717,14 @@ function ProfilePage({ session, onNavigate }) {
       })
       .catch((error) => {
         if (error.status === 401) {
-          session.clearAuth();
-          onNavigate("/auth");
+          sessionRef.current.clearAuth();
+          onNavigateRef.current("/auth");
         }
       });
     return () => {
       live = false;
     };
-  }, [onNavigate, session]);
+  }, [session.token]);
 
   const loadRelationPage = useCallback(
     async ({ reset = false, cursor = "" } = {}) => {
@@ -1759,7 +1870,7 @@ function ProfilePage({ session, onNavigate }) {
               粉丝
             </button>
             <button type="button">
-              <strong>{formatMetric(videos.length)}</strong>
+              <strong>{formatMetric(workCount)}</strong>
               作品
             </button>
           </div>
@@ -1966,7 +2077,7 @@ function VideoGrid({ videos, state, onSelect }) {
           <div className="work-meta">
             <h3>{video.title}</h3>
             <p>{formatMetric(video.like_count || 0)} 点赞 · {formatMetric(video.comment_count || 0)} 评论</p>
-            <span className="status-badge">{video.status === 0 ? "审核中" : "已发布"}</span>
+            <span className="status-badge">{video.status === 2 ? "已发布" : "非公开"}</span>
           </div>
         </button>
       ))}

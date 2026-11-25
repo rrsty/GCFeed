@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	applicationfeed "GCFeed/internal/application/feed"
+	applicationrecommendation "GCFeed/internal/application/recommendation"
 	domainfeed "GCFeed/internal/domain/feed"
 	infrajwt "GCFeed/internal/infra/jwt"
 	interfaceshttpfeed "GCFeed/internal/interfaces/http/feed"
@@ -58,13 +60,16 @@ type memoryFeedRepo struct {
 }
 
 type memoryFeedCache struct {
-	mu             sync.Mutex
-	pages          map[string]*applicationfeed.FeedPage
-	cards          map[int64]*domainfeed.FeedCard
-	stats          map[int64]*domainfeed.FeedStat
-	hotItems       []*domainfeed.FeedPageItem
-	followingInbox map[int64][]*domainfeed.FeedPageItem
-	authorOutbox   map[int64][]*domainfeed.FeedPageItem
+	mu                  sync.Mutex
+	pages               map[string]*applicationfeed.FeedPage
+	cards               map[int64]*domainfeed.FeedCard
+	stats               map[int64]*domainfeed.FeedStat
+	hotItems            []*domainfeed.FeedPageItem
+	hotErr              error
+	followingInbox      map[int64][]*domainfeed.FeedPageItem
+	authorOutbox        map[int64][]*domainfeed.FeedPageItem
+	followingErr        error
+	viewerCachedActions map[int64]map[int64]applicationfeed.CachedViewerActionState
 }
 
 func newMemoryFeedRepo(items []*domainfeed.FeedItem) *memoryFeedRepo {
@@ -79,11 +84,12 @@ func newMemoryFeedRepo(items []*domainfeed.FeedItem) *memoryFeedRepo {
 
 func newMemoryFeedCache() *memoryFeedCache {
 	return &memoryFeedCache{
-		pages:          map[string]*applicationfeed.FeedPage{},
-		cards:          map[int64]*domainfeed.FeedCard{},
-		stats:          map[int64]*domainfeed.FeedStat{},
-		followingInbox: map[int64][]*domainfeed.FeedPageItem{},
-		authorOutbox:   map[int64][]*domainfeed.FeedPageItem{},
+		pages:               map[string]*applicationfeed.FeedPage{},
+		cards:               map[int64]*domainfeed.FeedCard{},
+		stats:               map[int64]*domainfeed.FeedStat{},
+		followingInbox:      map[int64][]*domainfeed.FeedPageItem{},
+		authorOutbox:        map[int64][]*domainfeed.FeedPageItem{},
+		viewerCachedActions: map[int64]map[int64]applicationfeed.CachedViewerActionState{},
 	}
 }
 
@@ -276,6 +282,9 @@ func (c *memoryFeedCache) ListHotWindowPage(ctx context.Context, windowEnd time.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.hotErr != nil {
+		return nil, c.hotErr
+	}
 	items := cloneFeedPageItems(c.hotItems)
 	if offset < 0 {
 		offset = 0
@@ -290,13 +299,27 @@ func (c *memoryFeedCache) ListHotWindowPage(ctx context.Context, windowEnd time.
 	return items[offset:end], nil
 }
 
-func (c *memoryFeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, authorIDs []int64, cursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, bool, error) {
+func (c *memoryFeedCache) ListFollowingIndexPage(ctx context.Context, viewerID int64, pullAuthorIDs []int64, followedAuthorIDs []int64, cursor *domainfeed.TimelineCursor, limit int) ([]*domainfeed.FeedPageItem, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.followingErr != nil {
+		return nil, false, c.followingErr
+	}
+	allowed := int64Set(followedAuthorIDs)
+	for _, id := range pullAuthorIDs {
+		allowed[id] = struct{}{}
+	}
 	items := make([]*domainfeed.FeedPageItem, 0)
-	items = append(items, cloneFeedPageItems(c.followingInbox[viewerID])...)
-	for _, authorID := range authorIDs {
+	for _, item := range cloneFeedPageItems(c.followingInbox[viewerID]) {
+		if item.AuthorID > 0 && followedAuthorIDs != nil {
+			if _, ok := allowed[item.AuthorID]; !ok {
+				continue
+			}
+		}
+		items = append(items, item)
+	}
+	for _, authorID := range pullAuthorIDs {
 		items = append(items, cloneFeedPageItems(c.authorOutbox[authorID])...)
 	}
 	if len(items) == 0 {
@@ -307,6 +330,29 @@ func (c *memoryFeedCache) ListFollowingIndexPage(ctx context.Context, viewerID i
 		items = items[:limit]
 	}
 	return items, true, nil
+}
+
+func (c *memoryFeedCache) GetViewerActionStates(ctx context.Context, viewerID int64, videoIDs []int64) (map[int64]applicationfeed.CachedViewerActionState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	result := map[int64]applicationfeed.CachedViewerActionState{}
+	byVideo := c.viewerCachedActions[viewerID]
+	for _, videoID := range videoIDs {
+		if state, ok := byVideo[videoID]; ok {
+			result[videoID] = state
+		}
+	}
+	return result, nil
+}
+
+func (c *memoryFeedCache) SetViewerCachedActionForTest(viewerID int64, videoID int64, state applicationfeed.CachedViewerActionState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.viewerCachedActions[viewerID] == nil {
+		c.viewerCachedActions[viewerID] = map[int64]applicationfeed.CachedViewerActionState{}
+	}
+	c.viewerCachedActions[viewerID][videoID] = state
 }
 
 func (c *memoryFeedCache) AddInboxItemsForTest(userIDs []int64, item *domainfeed.FeedPageItem) {
@@ -387,6 +433,20 @@ func (r *memoryFeedRepo) ListFollowingPage(ctx context.Context, viewerID int64, 
 		limit = len(items)
 	}
 	return items[:limit], nil
+}
+
+func (r *memoryFeedRepo) ListFollowingAuthorIDs(ctx context.Context, viewerID int64) ([]int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	authors := make([]int64, 0, len(r.following[viewerID]))
+	for authorID := range r.following[viewerID] {
+		authors = append(authors, authorID)
+	}
+	sort.Slice(authors, func(i, j int) bool {
+		return authors[i] < authors[j]
+	})
+	return authors, nil
 }
 
 func (r *memoryFeedRepo) ListFollowingPullAuthorIDs(ctx context.Context, viewerID int64) ([]int64, error) {
@@ -725,6 +785,75 @@ func TestFeedAPIValidation(t *testing.T) {
 
 	badCursorResponse := performJSONRequest(router, http.MethodGet, "/api/feed-items?cursor=bad-cursor", "", "")
 	requireStatus(t, badCursorResponse, http.StatusBadRequest)
+}
+
+func TestHotFeedFallsBackToRepoOnEmptyWindowOrCacheError(t *testing.T) {
+	repo := newMemoryFeedRepo(seedHotFeedItems())
+	cache := newMemoryFeedCache()
+	router := newFeedRouterWithService(applicationfeed.New(repo, applicationfeed.WithFeedCache(cache)))
+
+	// 1. Redis 窗口冷启动为空时，首页自动降级 MySQL 累计热榜并支持后续游标翻页。
+	firstResp := performJSONRequest(router, http.MethodGet, "/api/feed-items?scene=hot&limit=2", "", "")
+	requireStatus(t, firstResp, http.StatusOK)
+	var firstPage feedAPIResponse
+	decodeJSON(t, firstResp, &firstPage)
+	if len(firstPage.Items) != 2 || firstPage.Items[0].VideoID != 1 || !firstPage.HasMore {
+		t.Fatalf("expected DB hot fallback on cold window, got %+v", firstPage)
+	}
+	secondResp := performJSONRequest(router, http.MethodGet, "/api/feed-items?scene=hot&limit=2&cursor="+firstPage.NextCursor, "", "")
+	requireStatus(t, secondResp, http.StatusOK)
+	var secondPage feedAPIResponse
+	decodeJSON(t, secondResp, &secondPage)
+	if len(secondPage.Items) != 1 || secondPage.Items[0].VideoID != 3 || secondPage.HasMore {
+		t.Fatalf("expected DB hot fallback second page, got %+v", secondPage)
+	}
+
+	// 2. Redis 报错时同样降级 DB，不返回 500。
+	cache.hotErr = errors.New("redis connection refused")
+	errFallbackResp := performJSONRequest(router, http.MethodGet, "/api/feed-items?scene=hot&limit=2", "", "")
+	requireStatus(t, errFallbackResp, http.StatusOK)
+}
+
+func TestFollowingFeedFallsBackOnCacheErrorAndOverlaysViewerCache(t *testing.T) {
+	repo := newMemoryFeedRepo(seedFollowingFeedItems())
+	repo.FollowForTest(42, 100)
+	repo.FollowForTest(42, 200)
+	cache := newMemoryFeedCache()
+	cache.followingErr = errors.New("redis timeout")
+	cache.SetViewerCachedActionForTest(42, 4, applicationfeed.CachedViewerActionState{
+		HasLike: true,
+		Liked:   true,
+	})
+
+	router, jwtManager := newFeedRouterWithServiceAndJWT(t, applicationfeed.New(repo, applicationfeed.WithFeedCache(cache)))
+	token := signTestToken(t, jwtManager, 42)
+
+	resp := performJSONRequest(router, http.MethodGet, "/api/feed-items?scene=following&limit=2", "", token)
+	requireStatus(t, resp, http.StatusOK)
+	var page feedAPIResponse
+	decodeJSON(t, resp, &page)
+	if len(page.Items) != 2 || page.Items[0].VideoID != 4 {
+		t.Fatalf("unexpected fallback following feed: %+v", page)
+	}
+	if !page.Items[0].Liked {
+		t.Fatalf("expected cached real-time liked=true overlay for read-your-own-writes")
+	}
+}
+
+func TestRecommendFeedBadCursorReturns400(t *testing.T) {
+	recService := applicationrecommendation.New(newMemoryRecommendationRepo())
+	feedRepo := newMemoryFeedRepo(seedFeedItems())
+	// 验证先 WithFeedCache 再 WithRecommender 也不受注册顺序影响。
+	feedService := applicationfeed.New(
+		feedRepo,
+		applicationfeed.WithFeedCache(newMemoryFeedCache()),
+		applicationfeed.WithRecommender(recService),
+	)
+	router, jwtManager := newFeedRouterWithServiceAndJWT(t, feedService)
+	token := signTestToken(t, jwtManager, 42)
+
+	resp := performJSONRequest(router, http.MethodPost, "/api/feed-queries", `{"scene":"recommend","cursor":"not-a-valid-cursor","limit":2}`, token)
+	requireStatus(t, resp, http.StatusBadRequest)
 }
 
 // newFeedRouter 只装配 Feed 路由，测试时无需数据库。

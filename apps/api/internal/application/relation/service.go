@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -32,6 +33,11 @@ type FollowFeedBackfiller interface {
 	CountFollowers(ctx context.Context, authorID int64) (int, error)
 	ListAuthorRecentVideos(ctx context.Context, authorID int64, limit int) ([]*domainfeed.FeedPageItem, error)
 	AddInboxItems(ctx context.Context, authorID int64, userIDs []int64, item *domainfeed.FeedPageItem, maxLen int64) error
+}
+
+// BatchFollowFeedBackfiller 支持单次 Redis Pipeline 批量回填关注流，减少同步 RTT。
+type BatchFollowFeedBackfiller interface {
+	AddInboxItemsBatch(ctx context.Context, authorID int64, userIDs []int64, items []*domainfeed.FeedPageItem, maxLen int64) error
 }
 
 type Option func(*Service)
@@ -151,8 +157,9 @@ func (s *Service) setFollow(ctx context.Context, userID int64, targetUserID int6
 		return nil, ErrUpdateRelationFailed
 	}
 	if active && follow.Active() {
+		// 关注关系已在数据库提交成功，Redis 回填属于缓存加速，失败时记录日志降级（读关注流可回源 DB），避免返回 500。
 		if err := s.backfillFollowFeed(ctx, userID, targetUserID); err != nil {
-			return nil, ErrBackfillFollowFeedFailed
+			log.Printf("backfill follow feed failed (user=%d target=%d): %v", userID, targetUserID, err)
 		}
 		s.notifyFollow(ctx, userID, targetUserID)
 	}
@@ -224,6 +231,12 @@ func (s *Service) backfillFollowFeed(ctx context.Context, userID int64, targetUs
 	items, err := s.backfiller.ListAuthorRecentVideos(ctx, targetUserID, defaultBackfillVideoLimit)
 	if err != nil {
 		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	if batcher, ok := s.backfiller.(BatchFollowFeedBackfiller); ok {
+		return batcher.AddInboxItemsBatch(ctx, targetUserID, []int64{userID}, items, defaultBackfillInboxMaxLen)
 	}
 	for _, item := range items {
 		if item == nil {
