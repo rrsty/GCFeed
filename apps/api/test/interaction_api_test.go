@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -654,6 +655,11 @@ func TestInteractionWorkerRejectsOutdatedEvent(t *testing.T) {
 // newInteractionRouter 只装配互动相关 RESTful 路由。
 func newInteractionRouter(t *testing.T) (*gin.Engine, *infrajwt.Manager) {
 	t.Helper()
+	return newInteractionRouterWithService(t, applicationinteraction.New(newMemoryInteractionRepo()))
+}
+
+func newInteractionRouterWithService(t *testing.T, service *applicationinteraction.Service) (*gin.Engine, *infrajwt.Manager) {
+	t.Helper()
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -663,8 +669,6 @@ func newInteractionRouter(t *testing.T) (*gin.Engine, *infrajwt.Manager) {
 		t.Fatalf("new jwt manager: %v", err)
 	}
 
-	repo := newMemoryInteractionRepo()
-	service := applicationinteraction.New(repo)
 	handler := interfaceshttpinteraction.New(service)
 	authMiddleware := interfaceshttpmiddleware.NewJWTAuth(jwtManager)
 
@@ -938,3 +942,124 @@ func cloneActionStateResult(result *applicationinteraction.ActionStateResult) *a
 }
 
 var _ domaininteraction.Repository = (*memoryInteractionRepo)(nil)
+
+type batchCapableMemoryInteractionRepo struct {
+	*memoryInteractionRepo
+	batchMu    sync.Mutex
+	batchCalls int
+	lastBatch  []domaininteraction.VideoStatDelta
+}
+
+func (r *batchCapableMemoryInteractionRepo) SetActionRecordOnly(ctx context.Context, userID int64, videoID int64, actionType string, active bool, idempotencyKey string, occurredAt ...time.Time) (*domaininteraction.Action, int, error) {
+	r.mu.Lock()
+	prevStat := r.stats[videoID]
+	r.mu.Unlock()
+
+	action, _, delta, err := r.SetAction(ctx, userID, videoID, actionType, active, idempotencyKey, occurredAt...)
+	if err != nil {
+		return nil, 0, err
+	}
+	// 还原 stats，验证计数完全由 BatchAddVideoStatDeltas 合并刷库更新。
+	r.mu.Lock()
+	r.stats[videoID] = prevStat
+	r.mu.Unlock()
+	return action, delta, nil
+}
+
+func (r *batchCapableMemoryInteractionRepo) BatchAddVideoStatDeltas(ctx context.Context, deltas []domaininteraction.VideoStatDelta) error {
+	r.batchMu.Lock()
+	r.batchCalls++
+	r.lastBatch = append([]domaininteraction.VideoStatDelta(nil), deltas...)
+	r.batchMu.Unlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, item := range deltas {
+		if item.LikeDelta != 0 {
+			r.addActionCount(item.VideoID, domaininteraction.ActionTypeLike, item.LikeDelta)
+		}
+		if item.FavoriteDelta != 0 {
+			r.addActionCount(item.VideoID, domaininteraction.ActionTypeFavorite, item.FavoriteDelta)
+		}
+	}
+	return nil
+}
+
+func TestInteractionWorkerRouteABatchStatFlushAggregatesDeltas(t *testing.T) {
+	baseRepo := newMemoryInteractionRepo()
+	repo := &batchCapableMemoryInteractionRepo{memoryInteractionRepo: baseRepo}
+	worker := applicationinteraction.NewActionWorker(
+		repo,
+		nil,
+		applicationinteraction.WithBatchStatFlush(time.Hour, 100),
+	)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	// 3 位用户对同一视频 1001 点赞，随后用户 2 取消点赞 -> 合并净增量应为 +2，且只刷库 1 次。
+	events := []*applicationinteraction.ActionChangedEvent{
+		{UserID: 1, VideoID: 1001, ActionType: domaininteraction.ActionTypeLike, Active: true, IdempotencyKey: "k1", OccurredAt: now},
+		{UserID: 2, VideoID: 1001, ActionType: domaininteraction.ActionTypeLike, Active: true, IdempotencyKey: "k2", OccurredAt: now.Add(time.Millisecond)},
+		{UserID: 3, VideoID: 1001, ActionType: domaininteraction.ActionTypeLike, Active: true, IdempotencyKey: "k3", OccurredAt: now.Add(2 * time.Millisecond)},
+		{UserID: 2, VideoID: 1001, ActionType: domaininteraction.ActionTypeLike, Active: false, IdempotencyKey: "k4", OccurredAt: now.Add(3 * time.Millisecond)},
+	}
+	for _, ev := range events {
+		if err := worker.HandleActionChanged(ctx, ev); err != nil {
+			t.Fatalf("HandleActionChanged: %v", err)
+		}
+	}
+	if repo.batchCalls != 0 {
+		t.Fatalf("expected deltas buffered before Flush, got batchCalls=%d", repo.batchCalls)
+	}
+	if err := worker.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if repo.batchCalls != 1 {
+		t.Fatalf("expected single aggregated batch flush, got %d", repo.batchCalls)
+	}
+	if got := baseRepo.ActionCountForTest(1001, domaininteraction.ActionTypeLike); got != 2 {
+		t.Fatalf("expected net like_count=2, got %d", got)
+	}
+}
+
+func TestInteractionWorkerClassifiesMissingVideoAsPermanentError(t *testing.T) {
+	repo := newMemoryInteractionRepo()
+	worker := applicationinteraction.NewActionWorker(repo, nil)
+
+	err := worker.HandleActionChanged(context.Background(), &applicationinteraction.ActionChangedEvent{
+		UserID:     42,
+		VideoID:    999999,
+		ActionType: domaininteraction.ActionTypeLike,
+		Active:     true,
+		OccurredAt: time.Now().UTC(),
+	})
+	if !errors.Is(err, domaininteraction.ErrVideoNotFound) {
+		t.Fatalf("expected ErrVideoNotFound, got %v", err)
+	}
+	type permanentChecker interface{ Permanent() bool }
+	var checker permanentChecker
+	if !errors.As(err, &checker) || !checker.Permanent() {
+		t.Fatalf("expected missing video error to be marked permanent for DLQ routing")
+	}
+}
+
+func TestInteractionAsyncRepeatLikeOnCacheMissDoesNotDoubleCount(t *testing.T) {
+	repo := newMemoryInteractionRepo()
+	// DB 中已存在用户 42 对视频 1001 的点赞记录（模拟 Redis 缓存重启/淘汰后的场景）。
+	if _, _, _, err := repo.SetAction(context.Background(), 42, 1001, domaininteraction.ActionTypeLike, true, "old-key"); err != nil {
+		t.Fatalf("seed db like: %v", err)
+	}
+	pipeline := newMemoryActionPipeline()
+	service := applicationinteraction.New(repo, applicationinteraction.WithAsyncActionPipeline(pipeline, pipeline))
+
+	res, err := service.Like(context.Background(), 42, 1001, "new-key-after-cache-evict")
+	if err != nil {
+		t.Fatalf("repeat like after cache miss: %v", err)
+	}
+	if !res.Active || res.LikeCount != 1 {
+		t.Fatalf("expected idempotent like_count=1 after cache miss, got %+v", res)
+	}
+	if pipeline.EventCount() != 0 {
+		t.Fatalf("expected no duplicate mq event when db already active, got %d", pipeline.EventCount())
+	}
+}
