@@ -1,8 +1,8 @@
 # GCFeed — 高并发短视频 Feed 流系统
 
-GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业级 Feed 流工程系统。基于 **Go 1.23+、Gin、MySQL 8.4、Redis 7.4、RabbitMQ 3.13 与 React 18** 构建，具备分层领域单体架构、推拉结合关注流、实时热榜、向量兴趣推荐流、分片计数削峰落库及 Prometheus + Grafana 全景监控能力。
+GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业级 Feed 流工程系统。基于 **Go 1.23+、Gin、MySQL 8.4、Redis 7.4、RabbitMQ 3.13 与 React 18** 构建，具备分层领域单体架构、推拉结合关注流、实时热榜、向量兴趣推荐流、Redis Lua 原子计数与窗口聚合批刷削峰落库及 Prometheus + Grafana 全景监控能力。
 
-本项目已历经生产级架构审查，完成了涵盖 **安全访问控制、跨存储数据一致性、分布式消费版本保护、缓存失效闭环与前端翻页防竞态** 的系统性优化。
+本项目已历经多轮生产级架构审查，完成了涵盖 **安全访问控制、Redis Lua 单 Hash 互动计数升级、MySQL 防死锁与索引治理、RabbitMQ 可靠投递与 DLQ、缓存降级闭环及服务优雅停机** 的系统性演进。
 
 ---
 
@@ -36,9 +36,9 @@ GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业�
    - **热门流（Hot）**：按点赞、评论、收藏与完播率计算加权分数，配合时间衰减因子生成实时分数，利用 Redis ZSET 滑动窗口与 MySQL 进行兜底稳定分页。
    - **推荐流（Recommend）**：基于用户观看历史实时构建兴趣向量，结合视频 N-Gram 文本特征向量进行**余弦相似度计算 + 新鲜度加权 + 近期曝光过滤去重**，提供打散重排候选。
 
-3. **高并发互动与计数削峰**：
-   - **分片计数器（Counter Sharding）**：视频点赞/收藏计数拆分为多个独立 Shard Key 并行递增/递减，大幅减轻单一 Redis 热点 Key 访问争用。
-   - **异步缓冲与落库闭环**：快速状态先落 Redis 并通过 Singleflight 与轻量 JSON 缓存支持超低时延读取；变更事件发往 RabbitMQ 削峰异步持久化至 MySQL。
+3. **高并发互动与计数削峰（Route A）**：
+   - **Redis Lua 单 Hash 原子计数**：视频点赞、收藏与评论计数收口至单 Hash `video:stat:v2:{id}`，通过 Lua 脚本在一次原子执行中完成用户状态切换、非负约束校验与计数增减，避免传统 `WATCH` 乐观锁冲突。
+   - **窗口聚合批刷与乱序保护**：变更事件经 RabbitMQ（Publisher Confirm + DLQ 死信保障）投递至 Worker，按时间与数量窗口（`200ms / 50` 条）合并同一视频增量后，通过原子 SQL（`GREATEST(0, col + ?)`）批量落库 MySQL，并配合纳秒级 `last_event_at_ns` 乱序保护与 Read-Your-Own-Writes 读写一致。
 
 4. **端到端生产级稳定性**：
    - **防击穿、防雪崩**：核心卡片查询接入 `singleflight` 抑制并发回源，缓存过期时间加入动态随机抖动（Jitter）。
@@ -63,18 +63,18 @@ GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业�
 │   ┌───────────────────────────────┴───────────────────────────────┐    │
 │   ▼                                                               ▼    │
 │ [Feed Service]                                            [Interaction]│
-│  ├─ Recommend (Vector + Freshness + Exposure Filter)       ├─ Sharded  │
-│  ├─ Following (Push-Pull Hybrid ZSET)                      │  Counter  │
+│  ├─ Recommend (Vector + Freshness + Exposure Filter)       ├─ Lua      │
+│  ├─ Following (Push-Pull Hybrid ZSET)                      │  Atomic   │
 │  └─ Hot (Dynamic Score Window)                             └─ Cache    │
 └───────────────────┬───────────────────────────────┬────────────────────┘
                     │                               │
-         Read / Sync State                Async Events
+         Read / Sync State                Async Events (Confirm)
                     │                               │
        ┌────────────▼────────────┐             ┌────▼────────────────────┐
-       │   Redis 7.4 (Cluster)   │             │   RabbitMQ 3.13 (Broker)│
+       │        Redis 7.4        │             │   RabbitMQ 3.13 (Broker)│
        │ ├─ Feed Cards & Stats   │             │ ├─ Video Published Topic│
        │ ├─ Following In/Outbox  │             │ ├─ Action Changed Queue │
-       │ └─ Sharded Action Stats │             │ └─ View Event Recorded  │
+       │ └─ Single-Hash Stats v2 │             │ └─ Retry + DLX / DLQ    │
        └────────────┬────────────┘             └────┬────────────────────┘
                     │                               │
          Cache Miss / Batch Load             Worker Consumption
@@ -98,12 +98,12 @@ GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业�
 - **静态资源安全加固**：对静态托管路由注入 `X-Content-Type-Options: nosniff` 与严格 CSP 策略，严禁目录浏览遍历。
 
 ### 2. P1 级数据一致性与消费可靠性闭环
-- **Redis 状态缺失时行为纠偏**：持久层补充 `GetAction`。在取消点赞/收藏时若 Redis 缓存淘汰，先回源数据库恢复用户真实状态，确保取消操作能准确计算出 `delta = -1` 并触发 MQ 投递，杜绝数据库与缓存永久失步。
-- **分片计数 TTL 生命周期强同步**：在分片计数管道写入中，遍历并同步刷新 Base Key 与所有 Shard Keys 的 TTL，根除因冷分片提前过期导致视频前台计数断崖下跌的 Bug。
-- **互动消费单调时间戳版本保护**：`SetAction` 持久化操作引入 `OccurredAt` 校验，若数据库已有状态更新时间晚于事件发生时间，直接作为迟到消息安全跳过，防止网络乱序或重投导致旧点赞覆盖较新的取消状态。
-- **MQ 拓扑限流与观看消费者闭环**：消费者通道配置 `Qos(20)` 预取上限，防止消息堆积打爆 Worker 内存；消费异常重投引入 50ms 延迟退避防止 CPU 忙轮询；在 Worker 启动中接入 `ConsumeViewEventRecorded` 观看队列消费者，根除消息无端积压。
-- **关注流取关残留过滤与惰性清理**：关注流拉取时对 inbox 与 outbox 统一做作者关注关系校验；取关后旧作者内容自动过滤，并在后台异步执行 `ZRem` 清除用户 inbox 残留项。
-- **关注流索引完整性回源兜底**：当 Redis 索引命中条数不足 `limit` 时（因截断或大 V 边界迁移），自动回源数据库 `ListFollowingPage` 兜底，保障翻页完整性。
+- **Redis 状态缺失时行为纠偏**：持久层补充 `GetAction`。在点赞/取消点赞或收藏时若 Redis 缓存淘汰，先回源数据库恢复用户真实状态，确保计算准确增量并同步 MQ 投递，杜绝数据库与缓存永久失步。
+- **Redis Lua 单 Hash 互动计数与 Worker 批刷（Route A）**：将原 `WATCH` + 16 分片计数升级为单 Hash `video:stat:v2:{id}` + Lua 原子脚本；Worker 通过 `WithBatchStatFlush(200ms, 50)` 按窗口合并增量后以原子 SQL `GREATEST(0, col + ?)` 批量落库，大幅降低热点视频行锁与 DB 写入频次。
+- **互动消费纳秒级乱序版本保护**：`SetAction` / `SetActionRecordOnly` 引入 `last_event_at_ns` 纳秒时间戳校验，乱序或迟到消息安全跳过，防止旧状态覆盖新状态。
+- **MySQL 防死锁、索引与慢查询治理**：移除 `account` / `video` 热点 `FOR UPDATE` 行锁，互关按 `user_id` 升序加锁消除 AB-BA 死锁；消除个人主页全表 `GROUP BY` 派生子查询；补齐 `message`、`exposure`、`interaction`、`video` 联合索引及连接池生命周期配置。
+- **RabbitMQ 并发安全、Confirm 与 DLQ 闭环**：消费者分配独立 Channel 与 `Qos(20)`；Publish 加锁并启用 Publisher Confirm；接入独立 `gcfeed.dlx` / `gcfeed.dlq` 死信队列与有限次精准重试、断线指数退避重连，并在 API 与 Worker 接入 `signal.NotifyContext` 优雅停机。
+- **关注流校验与缓存降级兜底**：修复关注流收件箱误用大 V 列表校验普通关注作者导致的漏删/误删，改为全量关注作者校验 + 批量异步 `ZRem`；补齐热门流/关注流冷启动与 Redis 异常 DB 降级、`singleflight` 脱离请求取消上下文、前端播放完播埋点及 Prometheus 路由防高基数爆炸。
 - **关注流游标全序一致过滤**：在应用层按 `(PublishedAt, VideoID)` 元组对游标进行全序精确过滤，消除同秒取模倒挂与浮点精度边缘导致的漏项/重复项。
 - **视频删除缓存失效闭环**：`videoService.Delete` 软删除成功后即刻调用 `DeleteCard` 失效 Feed 卡片缓存；由于数据库只查发布态视频，被删除视频实现全局即时下架。
 - **推荐分页会话基准时间锁定**：推荐游标携带 `SessionTime`，跨页翻页时计算新鲜度与候选打分基准时间恒定，防止跨分钟候选排序微变引发的跳项或重复推荐。
@@ -226,7 +226,6 @@ docker compose config
 | [docs/architecture.md](docs/architecture.md) | 核心架构、领域分层模型、推拉算法与数据库 ER 图 |
 | [docs/engineering.md](docs/engineering.md) | 编码规约、分层调用边界、目录规范与错误码规范 |
 | [docs/performance-testing.md](docs/performance-testing.md) | k6 压测指南、压测脚本与指标调优分析 |
-| [docs/resume-highlights.md](docs/resume-highlights.md) | 简历项目亮点提取与技术问答梳理 |
 
 ---
 
