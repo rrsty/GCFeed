@@ -1,0 +1,296 @@
+﻿# HELP gcfeed_feed_cache_requests_total Feed cache reads by cache area and result.
+# TYPE gcfeed_feed_cache_requests_total counter
+gcfeed_feed_cache_requests_total{area="card",result="hit"} 8.81856e+06
+gcfeed_feed_cache_requests_total{area="card",result="miss"} 30
+gcfeed_feed_cache_requests_total{area="page",result="hit"} 643666
+gcfeed_feed_cache_requests_total{area="page",result="miss"} 1149
+gcfeed_feed_cache_requests_total{area="stat",result="hit"} 8.81826e+06
+gcfeed_feed_cache_requests_total{area="stat",result="miss"} 330
+# HELP gcfeed_feed_cache_writes_total Feed cache writes by cache area and result.
+# TYPE gcfeed_feed_cache_writes_total counter
+gcfeed_feed_cache_writes_total{area="card",result="success"} 30
+gcfeed_feed_cache_writes_total{area="page",result="success"} 23
+gcfeed_feed_cache_writes_total{area="stat",result="success"} 330
+# HELP gcfeed_feed_items_total Total feed items returned by scene.
+# TYPE gcfeed_feed_items_total counter
+gcfeed_feed_items_total{scene="following"} 451130
+gcfeed_feed_items_total{scene="hot"} 1.89789e+06
+gcfeed_feed_items_total{scene="recommend"} 21730
+gcfeed_feed_items_total{scene="timeline"} 6.44784e+06
+# HELP gcfeed_feed_request_duration_seconds Feed request duration in seconds by scene.
+# TYPE gcfeed_feed_request_duration_seconds histogram
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.005"} 37
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.01"} 370
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.025"} 17578
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.05"} 42592
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.1"} 45108
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.25"} 45113
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="0.5"} 45113
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="1"} 45113
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="2.5"} 45113
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="5"} 45113
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="following",le="+Inf"} 45113
+gcfeed_feed_request_duration_seconds_sum{result="success",scene="following"} 1335.6511524629962
+gcfeed_feed_request_duration_seconds_count{result="success",scene="following"} 45113
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.005"} 115491
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.01"} 186418
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.025"} 189762
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.05"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.1"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.25"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="0.5"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="1"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="2.5"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="5"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="hot",le="+Inf"} 189789
+gcfeed_feed_request_duration_seconds_sum{result="success",scene="hot"} 896.3619489079937
+gcfeed_feed_request_duration_seconds_count{result="success",scene="hot"} 189789
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.005"} 0
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.01"} 0
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.025"} 0
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.05"} 0
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.1"} 125
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.25"} 385
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="0.5"} 737
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="1"} 1533
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="2.5"} 2173
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="5"} 2173
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="recommend",le="+Inf"} 2173
+gcfeed_feed_request_duration_seconds_sum{result="success",scene="recommend"} 1607.251072273001
+gcfeed_feed_request_duration_seconds_count{result="success",scene="recommend"} 2173
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.005"} 228758
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.01"} 403976
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.025"} 603212
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.05"} 643561
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.1"} 644783
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.25"} 644784
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="0.5"} 644784
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="1"} 644784
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="2.5"} 644784
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="5"} 644784
+gcfeed_feed_request_duration_seconds_bucket{result="success",scene="timeline",le="+Inf"} 644784
+gcfeed_feed_request_duration_seconds_sum{result="success",scene="timeline"} 6467.572864430096
+gcfeed_feed_request_duration_seconds_count{result="success",scene="timeline"} 644784
+# HELP gcfeed_feed_requests_total Total feed requests by scene and result.
+# TYPE gcfeed_feed_requests_total counter
+gcfeed_feed_requests_total{result="success",scene="following"} 45113
+gcfeed_feed_requests_total{result="success",scene="hot"} 189789
+gcfeed_feed_requests_total{result="success",scene="recommend"} 2173
+gcfeed_feed_requests_total{result="success",scene="timeline"} 644784
+# HELP gcfeed_http_request_duration_seconds HTTP request duration in seconds.
+# TYPE gcfeed_http_request_duration_seconds histogram
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.005"} 320924
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.01"} 580688
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.025"} 806917
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.05"} 875635
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.1"} 879678
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.25"} 879686
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="0.5"} 879686
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="1"} 879686
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="2.5"} 879686
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="5"} 879686
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/api/feed-items",status="200",le="+Inf"} 879686
+gcfeed_http_request_duration_seconds_sum{method="GET",route="/api/feed-items",status="200"} 8980.810299955723
+gcfeed_http_request_duration_seconds_count{method="GET",route="/api/feed-items",status="200"} 879686
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.005"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.01"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.025"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.05"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.1"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.25"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="0.5"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="1"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="2.5"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="5"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/health",status="200",le="+Inf"} 36
+gcfeed_http_request_duration_seconds_sum{method="GET",route="/health",status="200"} 0.0033361810000000006
+gcfeed_http_request_duration_seconds_count{method="GET",route="/health",status="200"} 36
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.005"} 15
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.01"} 22
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.025"} 23
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.05"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.1"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.25"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="0.5"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="1"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="2.5"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="5"} 25
+gcfeed_http_request_duration_seconds_bucket{method="GET",route="/metrics",status="200",le="+Inf"} 25
+gcfeed_http_request_duration_seconds_sum{method="GET",route="/metrics",status="200"} 0.156100016
+gcfeed_http_request_duration_seconds_count{method="GET",route="/metrics",status="200"} 25
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.005"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.01"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.025"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.05"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.1"} 125
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.25"} 385
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="0.5"} 736
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="1"} 1533
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="2.5"} 2173
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="5"} 2173
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/feed-queries",status="200",le="+Inf"} 2173
+gcfeed_http_request_duration_seconds_sum{method="POST",route="/api/feed-queries",status="200"} 1607.8282542729996
+gcfeed_http_request_duration_seconds_count{method="POST",route="/api/feed-queries",status="200"} 2173
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.005"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.01"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.025"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.05"} 0
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.1"} 5
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.25"} 5
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="0.5"} 5
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="1"} 5
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="2.5"} 5
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="5"} 5
+gcfeed_http_request_duration_seconds_bucket{method="POST",route="/api/sessions",status="200",le="+Inf"} 5
+gcfeed_http_request_duration_seconds_sum{method="POST",route="/api/sessions",status="200"} 0.267222069
+gcfeed_http_request_duration_seconds_count{method="POST",route="/api/sessions",status="200"} 5
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.005"} 0
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.01"} 9
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.025"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.05"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.1"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.25"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="0.5"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="1"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="2.5"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="5"} 10
+gcfeed_http_request_duration_seconds_bucket{method="PUT",route="/api/videos/:videoId/like",status="200",le="+Inf"} 10
+gcfeed_http_request_duration_seconds_sum{method="PUT",route="/api/videos/:videoId/like",status="200"} 0.08019365799999999
+gcfeed_http_request_duration_seconds_count{method="PUT",route="/api/videos/:videoId/like",status="200"} 10
+# HELP gcfeed_http_requests_total Total HTTP requests handled by the API.
+# TYPE gcfeed_http_requests_total counter
+gcfeed_http_requests_total{method="GET",route="/api/feed-items",status="200"} 879686
+gcfeed_http_requests_total{method="GET",route="/health",status="200"} 36
+gcfeed_http_requests_total{method="GET",route="/metrics",status="200"} 25
+gcfeed_http_requests_total{method="POST",route="/api/feed-queries",status="200"} 2173
+gcfeed_http_requests_total{method="POST",route="/api/sessions",status="200"} 5
+gcfeed_http_requests_total{method="PUT",route="/api/videos/:videoId/like",status="200"} 10
+# HELP go_gc_duration_seconds A summary of the wall-time pause (stop-the-world) duration in garbage collection cycles.
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 8.1791e-05
+go_gc_duration_seconds{quantile="0.25"} 0.001212734
+go_gc_duration_seconds{quantile="0.5"} 0.002697272
+go_gc_duration_seconds{quantile="0.75"} 0.004360516
+go_gc_duration_seconds{quantile="1"} 0.013079796
+go_gc_duration_seconds_sum 8.801788445
+go_gc_duration_seconds_count 4760
+# HELP go_gc_gogc_percent Heap size target percentage configured by the user, otherwise 100. This value is set by the GOGC environment variable, and the runtime/debug.SetGCPercent function. Sourced from /gc/gogc:percent.
+# TYPE go_gc_gogc_percent gauge
+go_gc_gogc_percent 100
+# HELP go_gc_gomemlimit_bytes Go runtime memory limit configured by the user, otherwise math.MaxInt64. This value is set by the GOMEMLIMIT environment variable, and the runtime/debug.SetMemoryLimit function. Sourced from /gc/gomemlimit:bytes.
+# TYPE go_gc_gomemlimit_bytes gauge
+go_gc_gomemlimit_bytes 9.223372036854776e+18
+# HELP go_goroutines Number of goroutines that currently exist.
+# TYPE go_goroutines gauge
+go_goroutines 24
+# HELP go_info Information about the Go environment.
+# TYPE go_info gauge
+go_info{version="go1.26.1"} 1
+# HELP go_memstats_alloc_bytes Number of bytes allocated in heap and currently in use. Equals to /memory/classes/heap/objects:bytes.
+# TYPE go_memstats_alloc_bytes gauge
+go_memstats_alloc_bytes 2.044132e+07
+# HELP go_memstats_alloc_bytes_total Total number of bytes allocated in heap until now, even if released already. Equals to /gc/heap/allocs:bytes.
+# TYPE go_memstats_alloc_bytes_total counter
+go_memstats_alloc_bytes_total 5.0270955784e+10
+# HELP go_memstats_buck_hash_sys_bytes Number of bytes used by the profiling bucket hash table. Equals to /memory/classes/profiling/buckets:bytes.
+# TYPE go_memstats_buck_hash_sys_bytes gauge
+go_memstats_buck_hash_sys_bytes 1.445486e+06
+# HELP go_memstats_frees_total Total number of heap objects frees. Equals to /gc/heap/frees:objects + /gc/heap/tiny/allocs:objects.
+# TYPE go_memstats_frees_total counter
+go_memstats_frees_total 4.60279035e+08
+# HELP go_memstats_gc_sys_bytes Number of bytes used for garbage collection system metadata. Equals to /memory/classes/metadata/other:bytes.
+# TYPE go_memstats_gc_sys_bytes gauge
+go_memstats_gc_sys_bytes 4.32256e+06
+# HELP go_memstats_heap_alloc_bytes Number of heap bytes allocated and currently in use, same as go_memstats_alloc_bytes. Equals to /memory/classes/heap/objects:bytes.
+# TYPE go_memstats_heap_alloc_bytes gauge
+go_memstats_heap_alloc_bytes 2.044132e+07
+# HELP go_memstats_heap_idle_bytes Number of heap bytes waiting to be used. Equals to /memory/classes/heap/released:bytes + /memory/classes/heap/free:bytes.
+# TYPE go_memstats_heap_idle_bytes gauge
+go_memstats_heap_idle_bytes 4.9086464e+07
+# HELP go_memstats_heap_inuse_bytes Number of heap bytes that are in use. Equals to /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes
+# TYPE go_memstats_heap_inuse_bytes gauge
+go_memstats_heap_inuse_bytes 2.9229056e+07
+# HELP go_memstats_heap_objects Number of currently allocated objects. Equals to /gc/heap/objects:objects.
+# TYPE go_memstats_heap_objects gauge
+go_memstats_heap_objects 33189
+# HELP go_memstats_heap_released_bytes Number of heap bytes released to OS. Equals to /memory/classes/heap/released:bytes.
+# TYPE go_memstats_heap_released_bytes gauge
+go_memstats_heap_released_bytes 3.4676736e+07
+# HELP go_memstats_heap_sys_bytes Number of heap bytes obtained from system. Equals to /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes + /memory/classes/heap/released:bytes + /memory/classes/heap/free:bytes.
+# TYPE go_memstats_heap_sys_bytes gauge
+go_memstats_heap_sys_bytes 7.831552e+07
+# HELP go_memstats_last_gc_time_seconds Number of seconds since 1970 of last garbage collection.
+# TYPE go_memstats_last_gc_time_seconds gauge
+go_memstats_last_gc_time_seconds 1.7957697198734765e+09
+# HELP go_memstats_mallocs_total Total number of heap objects allocated, both live and gc-ed. Semantically a counter version for go_memstats_heap_objects gauge. Equals to /gc/heap/allocs:objects + /gc/heap/tiny/allocs:objects.
+# TYPE go_memstats_mallocs_total counter
+go_memstats_mallocs_total 4.60312224e+08
+# HELP go_memstats_mcache_inuse_bytes Number of bytes in use by mcache structures. Equals to /memory/classes/metadata/mcache/inuse:bytes.
+# TYPE go_memstats_mcache_inuse_bytes gauge
+go_memstats_mcache_inuse_bytes 45920
+# HELP go_memstats_mcache_sys_bytes Number of bytes used for mcache structures obtained from system. Equals to /memory/classes/metadata/mcache/inuse:bytes + /memory/classes/metadata/mcache/free:bytes.
+# TYPE go_memstats_mcache_sys_bytes gauge
+go_memstats_mcache_sys_bytes 48216
+# HELP go_memstats_mspan_inuse_bytes Number of bytes in use by mspan structures. Equals to /memory/classes/metadata/mspan/inuse:bytes.
+# TYPE go_memstats_mspan_inuse_bytes gauge
+go_memstats_mspan_inuse_bytes 476320
+# HELP go_memstats_mspan_sys_bytes Number of bytes used for mspan structures obtained from system. Equals to /memory/classes/metadata/mspan/inuse:bytes + /memory/classes/metadata/mspan/free:bytes.
+# TYPE go_memstats_mspan_sys_bytes gauge
+go_memstats_mspan_sys_bytes 1.17504e+06
+# HELP go_memstats_next_gc_bytes Number of heap bytes when next garbage collection will take place. Equals to /gc/heap/goal:bytes.
+# TYPE go_memstats_next_gc_bytes gauge
+go_memstats_next_gc_bytes 3.5771794e+07
+# HELP go_memstats_other_sys_bytes Number of bytes used for other system allocations. Equals to /memory/classes/other:bytes.
+# TYPE go_memstats_other_sys_bytes gauge
+go_memstats_other_sys_bytes 3.88181e+06
+# HELP go_memstats_stack_inuse_bytes Number of bytes obtained from system for stack allocator in non-CGO environments. Equals to /memory/classes/heap/stacks:bytes.
+# TYPE go_memstats_stack_inuse_bytes gauge
+go_memstats_stack_inuse_bytes 5.57056e+06
+# HELP go_memstats_stack_sys_bytes Number of bytes obtained from system for stack allocator. Equals to /memory/classes/heap/stacks:bytes + /memory/classes/os-stacks:bytes.
+# TYPE go_memstats_stack_sys_bytes gauge
+go_memstats_stack_sys_bytes 5.57056e+06
+# HELP go_memstats_sys_bytes Number of bytes obtained from system. Equals to /memory/classes/total:byte.
+# TYPE go_memstats_sys_bytes gauge
+go_memstats_sys_bytes 9.4759192e+07
+# HELP go_sched_gomaxprocs_threads The current runtime.GOMAXPROCS setting, or the number of operating system threads that can execute user-level Go code simultaneously. Sourced from /sched/gomaxprocs:threads.
+# TYPE go_sched_gomaxprocs_threads gauge
+go_sched_gomaxprocs_threads 20
+# HELP go_threads Number of OS threads created.
+# TYPE go_threads gauge
+go_threads 43
+# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.
+# TYPE process_cpu_seconds_total counter
+process_cpu_seconds_total 966.16
+# HELP process_max_fds Maximum number of open file descriptors.
+# TYPE process_max_fds gauge
+process_max_fds 1.048576e+06
+# HELP process_network_receive_bytes_total Number of bytes received by the process over the network.
+# TYPE process_network_receive_bytes_total counter
+process_network_receive_bytes_total 8.020565614e+09
+# HELP process_network_transmit_bytes_total Number of bytes sent by the process over the network.
+# TYPE process_network_transmit_bytes_total counter
+process_network_transmit_bytes_total 7.91651468e+09
+# HELP process_open_fds Number of open file descriptors.
+# TYPE process_open_fds gauge
+process_open_fds 220
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 6.721536e+07
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.79576936456e+09
+# HELP process_virtual_memory_bytes Virtual memory size in bytes.
+# TYPE process_virtual_memory_bytes gauge
+process_virtual_memory_bytes 1.394429952e+09
+# HELP process_virtual_memory_max_bytes Maximum amount of virtual memory available in bytes.
+# TYPE process_virtual_memory_max_bytes gauge
+process_virtual_memory_max_bytes 1.8446744073709552e+19
+# HELP promhttp_metric_handler_requests_in_flight Current number of scrapes being served.
+# TYPE promhttp_metric_handler_requests_in_flight gauge
+promhttp_metric_handler_requests_in_flight 1
+# HELP promhttp_metric_handler_requests_total Total number of scrapes by HTTP status code.
+# TYPE promhttp_metric_handler_requests_total counter
+promhttp_metric_handler_requests_total{code="200"} 25
+promhttp_metric_handler_requests_total{code="500"} 0
+promhttp_metric_handler_requests_total{code="503"} 0
+

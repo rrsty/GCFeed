@@ -204,7 +204,7 @@ func main() {
 		})
 	}
 
-	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&users).Error; err != nil {
+	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&users, 500).Error; err != nil {
 		log.Fatalf("插入用户数据失败: %v", err)
 	}
 	log.Printf("测试用户注入完成: 数量=%d (默认账号 test_user_1 ~ test_user_%d，统一密码 123456)", len(users), len(users))
@@ -214,14 +214,18 @@ func main() {
 	videos := make([]infravideo.VideoModel, 0, *videoCount)
 	stats := make([]infravideo.VideoStatModel, 0, *videoCount)
 	now := time.Now()
+	publishSpacing := 15 * time.Minute
+	if *videoCount > 1000 {
+		publishSpacing = time.Minute
+	}
 
 	for i := 1; i <= *videoCount; i++ {
 		authorID := int64((i-1)%len(users) + 1)
 		titleIdx := (i - 1) % len(sampleTitles)
 		coverIdx := (i - 1) % len(sampleCovers)
 
-		// 错开发布时间（每条视频相隔 10~30 分钟），方便分页排序测试
-		publishTime := now.Add(-time.Duration((*videoCount-i)*15) * time.Minute)
+		// 错开发布时间，方便分页排序测试
+		publishTime := now.Add(-time.Duration(*videoCount-i) * publishSpacing)
 
 		title := fmt.Sprintf("%s #%d", sampleTitles[titleIdx], i)
 		cover := fmt.Sprintf("%s?auto=format&fit=crop&w=800&q=80", sampleCovers[coverIdx])
@@ -253,52 +257,79 @@ func main() {
 		})
 	}
 
-	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&videos).Error; err != nil {
+	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&videos, 500).Error; err != nil {
 		log.Fatalf("插入视频数据失败: %v", err)
 	}
 	// 使用 DoNothing 避免 Docker Compose 重启时用随机值覆盖线上已有互动计数。
-	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&stats).Error; err != nil {
+	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&stats, 500).Error; err != nil {
 		log.Fatalf("插入视频统计数据失败: %v", err)
 	}
 	log.Printf("测试视频注入完成: 视频数=%d, 统计数据数=%d", len(videos), len(stats))
 
-	// 生成视频内容特征向量（用于推荐流协同过滤与向量相似度计算）
+	// 生成视频内容特征向量（分块计算并批量写入，避免大数据集超出 MySQL 占位符和内存上限）
 	vectorizer := domainembedding.NewHashNgramVectorizer()
-	embeddings := make([]infraembedding.VideoEmbeddingModel, 0, len(videos))
-	for _, v := range videos {
-		vec := vectorizer.Vectorize(v.Title + " " + v.Description)
-		vecJSON, _ := json.Marshal(vec)
-		h := sha256.Sum256([]byte(v.Title + " " + v.Description))
-		embeddings = append(embeddings, infraembedding.VideoEmbeddingModel{
-			VideoID:       v.ID,
-			Model:         vectorizer.Model(),
-			Dimension:     vectorizer.Dimension(),
-			EmbeddingJSON: string(vecJSON),
-			TextHash:      hex.EncodeToString(h[:]),
-		})
-	}
-	if len(embeddings) > 0 {
-		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&embeddings).Error; err != nil {
+	const embeddingBatchSize = 200
+	totalEmbeddings := 0
+	for start := 0; start < len(videos); start += embeddingBatchSize {
+		end := min(start+embeddingBatchSize, len(videos))
+		batch := make([]infraembedding.VideoEmbeddingModel, 0, end-start)
+		for _, v := range videos[start:end] {
+			vec := vectorizer.Vectorize(v.Title + " " + v.Description)
+			vecJSON, _ := json.Marshal(vec)
+			h := sha256.Sum256([]byte(v.Title + " " + v.Description))
+			batch = append(batch, infraembedding.VideoEmbeddingModel{
+				VideoID:       v.ID,
+				Model:         vectorizer.Model(),
+				Dimension:     vectorizer.Dimension(),
+				EmbeddingJSON: string(vecJSON),
+				TextHash:      hex.EncodeToString(h[:]),
+			})
+		}
+		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&batch, embeddingBatchSize).Error; err != nil {
 			log.Printf("插入视频向量数据警告: %v", err)
 		} else {
-			log.Printf("视频向量注入完成: 向量数=%d", len(embeddings))
+			totalEmbeddings += len(batch)
 		}
 	}
+	log.Printf("视频向量注入完成: 向量数=%d", totalEmbeddings)
 
 	// 5. 生成部分关注关系和真实一致的关系统计
 	follows := make([]infrarelation.FollowModel, 0)
 	followingCountMap := make(map[int64]int, len(users))
 	followerCountMap := make(map[int64]int, len(users))
-	for _, u := range users {
-		for _, target := range users {
-			if u.ID != target.ID && (u.ID+target.ID)%3 == 0 {
+	if len(users) <= 50 {
+		for _, u := range users {
+			for _, target := range users {
+				if u.ID != target.ID && (u.ID+target.ID)%3 == 0 {
+					follows = append(follows, infrarelation.FollowModel{
+						UserID:       u.ID,
+						TargetUserID: target.ID,
+						Status:       1,
+					})
+					followingCountMap[u.ID]++
+					followerCountMap[target.ID]++
+				}
+			}
+		}
+	} else {
+		for _, u := range users {
+			seen := make(map[int64]struct{}, 20)
+			for k := 1; k <= 20; k++ {
+				targetID := int64((int(u.ID)+k*7-1)%len(users) + 1)
+				if targetID == u.ID {
+					continue
+				}
+				if _, exists := seen[targetID]; exists {
+					continue
+				}
+				seen[targetID] = struct{}{}
 				follows = append(follows, infrarelation.FollowModel{
 					UserID:       u.ID,
-					TargetUserID: target.ID,
+					TargetUserID: targetID,
 					Status:       1,
 				})
 				followingCountMap[u.ID]++
-				followerCountMap[target.ID]++
+				followerCountMap[targetID]++
 			}
 		}
 	}
@@ -312,11 +343,11 @@ func main() {
 	}
 
 	if len(follows) > 0 {
-		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&follows).Error; err != nil {
+		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&follows, 500).Error; err != nil {
 			log.Printf("插入关注记录警告: %v", err)
 		}
 	}
-	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&relationStats).Error; err != nil {
+	if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&relationStats, 500).Error; err != nil {
 		log.Printf("插入关系统计警告: %v", err)
 	}
 	log.Printf("关注与关系统计注入完成: 关注记录数=%d", len(follows))
@@ -338,7 +369,7 @@ func main() {
 		}
 	}
 	if len(actions) > 0 {
-		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&actions).Error; err != nil {
+		if err := gormDB.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&actions, 500).Error; err != nil {
 			log.Printf("插入互动点赞状态警告: %v", err)
 		} else {
 			log.Printf("互动点赞状态注入完成: 点赞记录数=%d", len(actions))

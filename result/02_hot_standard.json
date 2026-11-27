@@ -1,0 +1,149 @@
+{
+    "metrics": {
+        "iterations": {
+            "count": 600,
+            "rate": 19.871294947378825
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 600,
+            "thresholds": {
+                "rate<0.01": false
+            },
+            "value": 0
+        },
+        "http_req_sending": {
+            "avg": 0.019701666666666666,
+            "min": 0,
+            "med": 0,
+            "max": 1.5396,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "vus": {
+            "value": 20,
+            "min": 20,
+            "max": 20
+        },
+        "iteration_duration": {
+            "avg": 1005.6983543333341,
+            "min": 1000.6771,
+            "med": 1005.4111499999999,
+            "max": 1019.4522,
+            "p(90)": 1009.44547,
+            "p(95)": 1010.61596
+        },
+        "http_reqs": {
+            "count": 600,
+            "rate": 19.871294947378825
+        },
+        "checks": {
+            "passes": 1200,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_duration{expected_response:true}": {
+            "p(90)": 7.76269,
+            "p(95)": 8.945449999999997,
+            "avg": 4.599473500000002,
+            "min": 0.5053,
+            "med": 4.3888,
+            "max": 18.2555
+        },
+        "http_req_connecting": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0.07615383333333334,
+            "min": 0,
+            "med": 0,
+            "max": 3.1121
+        },
+        "http_req_duration": {
+            "avg": 4.599473500000002,
+            "min": 0.5053,
+            "med": 4.3888,
+            "max": 18.2555,
+            "p(90)": 7.76269,
+            "p(95)": 8.945449999999997,
+            "thresholds": {
+                "p(95)<500": false
+            }
+        },
+        "data_sent": {
+            "count": 61800,
+            "rate": 2046.7433795800189
+        },
+        "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0
+        },
+        "http_req_receiving": {
+            "min": 0,
+            "med": 0.5035000000000001,
+            "max": 11.1864,
+            "p(90)": 1.0129299999999999,
+            "p(95)": 1.3465549999999988,
+            "avg": 0.480495333333333
+        },
+        "http_req_blocked": {
+            "med": 0,
+            "max": 3.1803,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0.08781483333333337,
+            "min": 0
+        },
+        "http_req_waiting": {
+            "max": 17.5531,
+            "p(90)": 7.041480000000001,
+            "p(95)": 8.000174999999995,
+            "avg": 4.099276500000002,
+            "min": 0.5032,
+            "med": 3.9037
+        },
+        "vus_max": {
+            "value": 20,
+            "min": 20,
+            "max": 20
+        },
+        "feed_success_rate": {
+            "passes": 600,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.99": false
+            },
+            "value": 1
+        },
+        "data_received": {
+            "count": 4626600,
+            "rate": 153227.5553392381
+        }
+    },
+    "setup_data": {},
+    "root_group": {
+            "name": "",
+            "path": "",
+            "id": "d41d8cd98f00b204e9800998ecf8427e",
+            "groups": {},
+            "checks": {
+                    "status is 200": {
+                        "path": "::status is 200",
+                        "id": "6210a8cd14cd70477eba5c5e4cb3fb5f",
+                        "passes": 600,
+                        "fails": 0,
+                        "name": "status is 200"
+                    },
+                    "has items array": {
+                        "id": "7fb79205155afc852fad0d08cbdee30f",
+                        "passes": 600,
+                        "fails": 0,
+                        "name": "has items array",
+                        "path": "::has items array"
+                    }
+                }
+        }
+}

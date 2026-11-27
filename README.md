@@ -17,6 +17,7 @@ GCFeed 是一个面向短视频高并发分发、互动与消费场景的工业�
   - [使用 Docker Compose 一键启动](#1-使用-docker-compose-一键启动)
   - [本地开发环境搭建](#2-本地开发环境搭建)
 - [可观测性与监控面板](#可观测性与监控面板)
+- [性能压测结果（50,000 视频规模）](#性能压测结果50000-视频规模)
 - [验证与质量保障](#验证与质量保障)
 - [文档地图](#文档地图)
 - [鸣谢与开源致谢](#鸣谢与开源致谢)
@@ -195,6 +196,30 @@ npm run dev
 
 ---
 
+## 性能压测结果（50,000 视频规模）
+
+基于 [tests/k6/load_test.js](tests/k6/load_test.js) 在单机 Docker Compose 全栈环境（Windows / Intel i7-12700H 14C20T / 15.7 GB RAM）下执行压测；MySQL 业务数据规模为 **1,000 个用户、50,000 条已发布视频、50,000 条特征向量、20,000 条关注关系**。
+
+| 场景 | 模式 | 并发 VU / 思考时间 | 总请求数 | QPS | 平均延迟 (avg) | P95 延迟 | HTTP 错误率 | 阈值校验 |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Timeline** | 标准模拟 | 20 VU / 1s | 600 | 19.85 | 5.97 ms | 11.77 ms | 0.00% | PASS |
+| **Hot** | 标准模拟 | 20 VU / 1s | 600 | 19.87 | 4.60 ms | 8.95 ms | 0.00% | PASS |
+| **Following** | 标准模拟 | 20 VU / 1s | 601 | 19.66 | 15.61 ms | 32.71 ms | 0.00% | PASS |
+| **Recommend** | 标准模拟 | 20 VU / 1s | 516 | 16.56 | 187.59 ms | 309.80 ms | 0.00% | PASS |
+| **Timeline** | 极限吞吐 | 50 VU / 0s | 202,971 | **6,764.11** | 7.07 ms | 11.62 ms | 0.00% | PASS |
+| **Timeline** | 极限吞吐 | 100 VU / 0s | 207,852 | **6,925.86** | 14.02 ms | 25.34 ms | 0.00% | PASS |
+| **Timeline** | 极限吞吐 | 200 VU / 0s | 233,360 | **7,773.23** | 25.27 ms | 44.81 ms | 0.00% | PASS |
+| **Hot** | 极限吞吐 | 50 VU / 0s | 189,188 | **6,304.43** | 7.57 ms | 12.07 ms | 0.00% | PASS |
+| **Following** | 极限吞吐 | 50 VU / 0s | 44,513 | **1,479.99** | 33.36 ms | 55.31 ms | 0.00% | PASS |
+| **Recommend** | 极限吞吐 | 50 VU / 0s | 1,658 | 54.30 | 913.80 ms | 1,565.61 ms | 0.00% | `p95>500ms` |
+
+- **多级缓存命中率**（Prometheus 累计增量）：Page 页缓存 **99.82%**（643,666 hit / 1,147 miss）、Card 卡片缓存 **100.00%**（8,818,550 hit）、Stat 计数缓存 **99.996%**（8,818,240 hit / 310 miss）。
+- **5 万行深分页实测**（`EXPLAIN` 命中 `idx_video_timeline`）：第 45,000 条之后取 10 条，复合游标查询耗时 **`0.84 ms`**，对比传统 `LIMIT 45000, 10`（`23.88 ms`）提升约 **28.3 倍**。
+- **瓶颈与演进定位**：`Recommend` 在 50 VU 极限压测下 P95 升至 `1,565.61 ms`（0% 错误率），由慢日志定位为 `ListCandidatePool` 对 5 万行执行动态 `hot_score` 排序产生的 Filesort（单 SQL 260~310 ms），后续可通过将 Top 500 候选池预同步至 Redis ZSET 或物化带索引热度列优化。
+- **完整报告与原始数据**：见 [result/summary.md](result/summary.md) 及 [`result/`](result/) 下的原始 k6 JSON/文本输出与 Prometheus `/metrics` 快照。
+
+---
+
 ## 验证与质量保障
 
 全项目均配套完备的自动化测试与类型检查套件，合并前执行以下校验：
@@ -226,6 +251,7 @@ docker compose config
 | [docs/architecture.md](docs/architecture.md) | 核心架构、领域分层模型、推拉算法与数据库 ER 图 |
 | [docs/engineering.md](docs/engineering.md) | 编码规约、分层调用边界、目录规范与错误码规范 |
 | [docs/performance-testing.md](docs/performance-testing.md) | k6 压测指南、压测脚本与指标调优分析 |
+| **[result/summary.md](result/summary.md)** | **50,000 视频规模 k6 压测汇总报告与原始数据** |
 
 ---
 
