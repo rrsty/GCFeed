@@ -218,6 +218,24 @@ npm run dev
 - **瓶颈与演进定位**：`Recommend` 在 50 VU 极限压测下 P95 升至 `1,565.61 ms`（0% 错误率），由慢日志定位为 `ListCandidatePool` 对 5 万行执行动态 `hot_score` 排序产生的 Filesort（单 SQL 260~310 ms），后续可通过将 Top 500 候选池预同步至 Redis ZSET 或物化带索引热度列优化。
 - **完整报告与原始数据**：见 [result/summary.md](result/summary.md) 及 [`result/`](result/) 下的原始 k6 JSON/文本输出与 Prometheus `/metrics` 快照。
 
+### 核心优化前后 A/B 压测对比（复合游标 / ID-Detail 缓存分离 / 高并发写链路）
+
+在同等 50,000 视频规模下，通过独立 A/B 对照套件 [`apps/api/cmd/abbench/`](apps/api/cmd/abbench/) 与写压测脚本 [`tests/k6/like_write_test.js`](tests/k6/like_write_test.js) 实测三项核心架构优化前后变化（完整实验设计、原始数据与 `EXPLAIN ANALYZE` 见 [result/ab_compare/summary.md](result/ab_compare/summary.md)）：
+
+| 优化专题 | 测试场景 | 优化前基线 | 优化后方案 | 核心量化提升 |
+| :--- | :--- | :---: | :---: | :--- |
+| **复合游标 vs `OFFSET`** | 深度 45,000 单 SQL 分页 | `14.920 ms`（全表扫 50,000 行 + Filesort） | **`0.869 ms`**（命中 `idx_video_timeline` 扫 11 行） | 平均耗时 **17.17x**（引擎层 20.7 ms → 0.047 ms） |
+| **复合游标 vs `OFFSET`** | 50 并发深页回源（绕过 Page 缓存） | `542.82 QPS` / P95 `156.44 ms` | **`10,405.82 QPS`** / P95 **`7.77 ms`** | 吞吐 **19.17x**，P95 **降 95.0%** |
+| **ID-Detail 缓存分离** | Redis 内存占用（200 页 / 500 视频池） | `1,651,200 bytes`（整页大 JSON） | **`690,256 bytes`**（轻量 Page + Card + Stat） | Redis 内存 **节省 58.20%** |
+| **ID-Detail 缓存分离** | 50 读 + 10 写热点点赞混合压测 | 读 `3,362.92 QPS` / P95 `38.34 ms` / 命中率 `49.54%` / MySQL `Com_select 50,939` | 读 **`7,156.96 QPS`** / P95 **`10.33 ms`** / 命中率 **`100.00%`** / `Com_select 0` | 读吞吐 **2.13x**，P95 **降 73.1%**，DB 零回源 |
+| **ID-Detail 缓存分离** | 50 并发多用户个性化流（低页复用） | 读 `7,796.54 QPS` / P95 `31.37 ms` / `Com_select 20,122` | 读 **`10,185.74 QPS`** / P95 **`7.62 ms`** / `Com_select 0` | P95 **降 75.7%**，Card/Stat 100% 共享命中 |
+| **Redis Lua 单 Hash 写** | 50~200 并发多用户争抢同一热点视频 | `4,092~5,053 QPS` / P95 `17.08~48.13 ms` / `46.1 cmds/op` | **`26,296~27,119 QPS`** / P95 **`3.40~10.59 ms`** / **`12.0 cmds/op`** | 吞吐 **5.34x~6.43x**，命令数降 74% |
+| **Redis Lua 单 Hash 写** | 50 并发同用户高频连点冲突 | `403.87 QPS` / **`34,987` 次冲突（`94.54%` 失败）** | **`26,034.23 QPS`** / **`0` 冲突（`0.00%`）** | 吞吐 **64.46x**，乐观锁冲突归零 |
+| **Worker 窗口批刷落库** | 1,500 事件 / 20 并发写同一热点视频 | `278.12 ev/s` / `1,500` 次刷库 / **`1,498` 次行锁等待 (`95,086 ms`)** | **`1,525.40 ev/s`** / **`30` 次刷库** / **`0` 次行锁等待 (`0 ms`)** | 消费吞吐 **5.48x**，刷库降 **98.0%**，一致性 `500/500` |
+| **端到端 HTTP k6 写** | 50/100 VU 交替点赞同一热点视频 | 同步写：`5,230 / 5,358` 次行锁等待（~952s / 961s） | Lua + 批刷：**`0` 次行锁等待**，`Com_update` 降约 **75%** | Docker 实盘排空后 DB/Redis/活跃行强一致 (`7/7/7`) |
+
+- **端到端写链路瓶颈定位**：k6 全链路压测同时揭示当前异步 HTTP 写接口吞吐受限于 [`rabbitmq.go`](apps/api/internal/infra/mq/rabbitmq.go#L155-L198) 中 `publishJSON` 的全局 `pubMu.Lock()` + 同步持久化 `Publisher Confirm` 排队（约 7.5~8 ms/次），后续可通过 Publish Channel Pool 或批量异步 Confirm 进一步释放 HTTP 层至千~万级 QPS。
+
 ---
 
 ## 验证与质量保障
@@ -252,6 +270,7 @@ docker compose config
 | [docs/engineering.md](docs/engineering.md) | 编码规约、分层调用边界、目录规范与错误码规范 |
 | [docs/performance-testing.md](docs/performance-testing.md) | k6 压测指南、压测脚本与指标调优分析 |
 | **[result/summary.md](result/summary.md)** | **50,000 视频规模 k6 压测汇总报告与原始数据** |
+| **[result/ab_compare/summary.md](result/ab_compare/summary.md)** | **复合游标 / ID-Detail 缓存分离 / 高并发写链路 A/B 对照压测报告** |
 
 ---
 

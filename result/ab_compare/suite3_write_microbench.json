@@ -1,0 +1,238 @@
+{
+  "timestamp": "2026-11-27T22:52:37+08:00",
+  "bench_video_id": 49990,
+  "redis_write": [
+    {
+      "scenario": "multi_user_hot_video",
+      "mode": "legacy_watch_16shard",
+      "concurrency": 50,
+      "stats": {
+        "count": 40941,
+        "errors": 0,
+        "elapsed_sec": 10.004,
+        "qps": 4092.46,
+        "avg_ms": 12.196,
+        "min_ms": 3.704,
+        "p50_ms": 11.892,
+        "p90_ms": 15.775,
+        "p95_ms": 17.083,
+        "p99_ms": 19.842,
+        "max_ms": 43.585
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 1885189,
+      "commands_per_op": 46.05,
+      "redis_key_count": 68
+    },
+    {
+      "scenario": "multi_user_hot_video",
+      "mode": "lua_single_hash",
+      "concurrency": 50,
+      "stats": {
+        "count": 263021,
+        "errors": 0,
+        "elapsed_sec": 10.0021,
+        "qps": 26296.47,
+        "avg_ms": 1.898,
+        "min_ms": 0,
+        "p50_ms": 1.751,
+        "p90_ms": 2.894,
+        "p95_ms": 3.404,
+        "p99_ms": 4.864,
+        "max_ms": 13.238
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 3156876,
+      "commands_per_op": 12,
+      "redis_key_count": 51
+    },
+    {
+      "scenario": "multi_user_hot_video",
+      "mode": "legacy_watch_16shard",
+      "concurrency": 100,
+      "stats": {
+        "count": 49145,
+        "errors": 0,
+        "elapsed_sec": 10.006,
+        "qps": 4911.54,
+        "avg_ms": 20.31,
+        "min_ms": 6.626,
+        "p50_ms": 20.05,
+        "p90_ms": 24.997,
+        "p95_ms": 26.59,
+        "p99_ms": 29.824,
+        "max_ms": 72.942
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 2264381,
+      "commands_per_op": 46.08,
+      "redis_key_count": 118
+    },
+    {
+      "scenario": "multi_user_hot_video",
+      "mode": "lua_single_hash",
+      "concurrency": 100,
+      "stats": {
+        "count": 271263,
+        "errors": 0,
+        "elapsed_sec": 10.0027,
+        "qps": 27118.94,
+        "avg_ms": 3.682,
+        "min_ms": 0,
+        "p50_ms": 3.593,
+        "p90_ms": 5.075,
+        "p95_ms": 5.65,
+        "p99_ms": 7.142,
+        "max_ms": 11.843
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 3256380,
+      "commands_per_op": 12,
+      "redis_key_count": 101
+    },
+    {
+      "scenario": "multi_user_hot_video",
+      "mode": "legacy_watch_16shard",
+      "concurrency": 200,
+      "stats": {
+        "count": 50576,
+        "errors": 0,
+        "elapsed_sec": 10.0101,
+        "qps": 5052.51,
+        "avg_ms": 39.442,
+        "min_ms": 20.395,
+        "p50_ms": 39.15,
+        "p90_ms": 46.068,
+        "p95_ms": 48.126,
+        "p99_ms": 53.096,
+        "max_ms": 165.005
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 2333699,
+      "commands_per_op": 46.14,
+      "redis_key_count": 218
+    },
+    {
+      "scenario": "multi_user_hot_video",
+      "mode": "lua_single_hash",
+      "concurrency": 200,
+      "stats": {
+        "count": 270039,
+        "errors": 0,
+        "elapsed_sec": 10.0065,
+        "qps": 26986.4,
+        "avg_ms": 7.4,
+        "min_ms": 0.808,
+        "p50_ms": 7.256,
+        "p90_ms": 9.723,
+        "p95_ms": 10.594,
+        "p99_ms": 12.721,
+        "max_ms": 22.75
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 3242892,
+      "commands_per_op": 12.01,
+      "redis_key_count": 201
+    },
+    {
+      "scenario": "single_user_same_key_burst",
+      "mode": "legacy_watch_16shard",
+      "concurrency": 50,
+      "stats": {
+        "count": 2021,
+        "errors": 34987,
+        "elapsed_sec": 5.0041,
+        "qps": 403.87,
+        "avg_ms": 9.979,
+        "min_ms": 4.156,
+        "p50_ms": 9.666,
+        "p90_ms": 12.848,
+        "p95_ms": 13.94,
+        "p99_ms": 17.261,
+        "max_ms": 22.169
+      },
+      "conflict_errors": 34987,
+      "conflict_rate_pct": 94.54,
+      "redis_commands_delta": 267210,
+      "commands_per_op": 7.22,
+      "redis_key_count": 4
+    },
+    {
+      "scenario": "single_user_same_key_burst",
+      "mode": "lua_single_hash",
+      "concurrency": 50,
+      "stats": {
+        "count": 130223,
+        "errors": 0,
+        "elapsed_sec": 5.002,
+        "qps": 26034.23,
+        "avg_ms": 1.917,
+        "min_ms": 0,
+        "p50_ms": 1.757,
+        "p90_ms": 2.94,
+        "p95_ms": 3.467,
+        "p99_ms": 4.983,
+        "max_ms": 13.541
+      },
+      "conflict_errors": 0,
+      "conflict_rate_pct": 0,
+      "redis_commands_delta": 1432721,
+      "commands_per_op": 11,
+      "redis_key_count": 2
+    }
+  ],
+  "worker_db_flush": [
+    {
+      "mode": "per_event_sync_stat_update",
+      "total_events": 1500,
+      "concurrency": 20,
+      "errors": 0,
+      "elapsed_sec": 5.3933,
+      "events_per_sec": 278.12,
+      "set_action_calls": 1500,
+      "stat_flush_calls": 1500,
+      "db_video_stat_like_count": 500,
+      "db_active_action_rows": 500,
+      "consistent": true,
+      "mysql_status_delta": {
+        "Com_insert": 0,
+        "Com_select": 4500,
+        "Com_update": 3000,
+        "Handler_read_key": 7508,
+        "Handler_read_next": 0,
+        "Innodb_row_lock_time": 95086,
+        "Innodb_row_lock_waits": 1498,
+        "Innodb_rows_updated": 3000
+      }
+    },
+    {
+      "mode": "batch_stat_flush_200ms_50",
+      "total_events": 1500,
+      "concurrency": 20,
+      "errors": 0,
+      "elapsed_sec": 0.9834,
+      "events_per_sec": 1525.4,
+      "set_action_calls": 1500,
+      "stat_flush_calls": 30,
+      "db_video_stat_like_count": 500,
+      "db_active_action_rows": 500,
+      "consistent": true,
+      "mysql_status_delta": {
+        "Com_insert": 0,
+        "Com_select": 3000,
+        "Com_update": 1530,
+        "Handler_read_key": 4538,
+        "Handler_read_next": 0,
+        "Innodb_row_lock_time": 0,
+        "Innodb_row_lock_waits": 0,
+        "Innodb_rows_updated": 1530
+      }
+    }
+  ]
+}

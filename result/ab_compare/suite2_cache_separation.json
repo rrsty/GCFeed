@@ -1,0 +1,145 @@
+{
+  "timestamp": "2026-11-27T22:47:16+08:00",
+  "memory_compare": [
+    {
+      "mode": "monolithic_page_cache",
+      "key_count": 200,
+      "total_key_bytes": 1651200,
+      "redis_used_memory_delta_bytes": 1738240,
+      "bytes_per_logical_page": 8256
+    },
+    {
+      "mode": "id_detail_separated_cache",
+      "key_count": 1200,
+      "total_key_bytes": 690256,
+      "redis_used_memory_delta_bytes": 776640,
+      "bytes_per_logical_page": 3451.28
+    }
+  ],
+  "mixed_read_write": [
+    {
+      "mode": "monolithic_page_invalidate_on_write",
+      "read_stats": {
+        "count": 50471,
+        "errors": 0,
+        "elapsed_sec": 15.0081,
+        "qps": 3362.92,
+        "avg_ms": 14.835,
+        "min_ms": 0,
+        "p50_ms": 12.209,
+        "p90_ms": 31.942,
+        "p95_ms": 38.338,
+        "p99_ms": 53.432,
+        "max_ms": 108.986
+      },
+      "write_ops": 25092,
+      "page_hit_count": 25021,
+      "page_miss_count": 25484,
+      "detail_hit_count": 0,
+      "detail_miss_count": 0,
+      "effective_hit_rate_pct": 49.54,
+      "mysql_status_delta": {
+        "Com_insert": 0,
+        "Com_select": 50939,
+        "Com_update": 0,
+        "Handler_read_key": 764168,
+        "Handler_read_next": 0,
+        "Innodb_row_lock_time": 0,
+        "Innodb_row_lock_waits": 0,
+        "Innodb_rows_updated": 0
+      }
+    },
+    {
+      "mode": "id_detail_separated_in_place_stat_update",
+      "read_stats": {
+        "count": 107384,
+        "errors": 0,
+        "elapsed_sec": 15.0041,
+        "qps": 7156.96,
+        "avg_ms": 6.978,
+        "min_ms": 0.417,
+        "p50_ms": 6.777,
+        "p90_ms": 9.429,
+        "p95_ms": 10.332,
+        "p99_ms": 12.279,
+        "max_ms": 19.339
+      },
+      "write_ops": 34325,
+      "page_hit_count": 107434,
+      "page_miss_count": 0,
+      "detail_hit_count": 107402,
+      "detail_miss_count": 0,
+      "effective_hit_rate_pct": 100,
+      "mysql_status_delta": {
+        "Com_insert": 0,
+        "Com_select": 0,
+        "Com_update": 0,
+        "Handler_read_key": 8,
+        "Handler_read_next": 0,
+        "Innodb_row_lock_time": 0,
+        "Innodb_row_lock_waits": 0,
+        "Innodb_rows_updated": 0
+      }
+    }
+  ],
+  "personalized_reuse": [
+    {
+      "mode": "monolithic_page_cache",
+      "read_stats": {
+        "count": 116969,
+        "errors": 0,
+        "elapsed_sec": 15.0027,
+        "qps": 7796.54,
+        "avg_ms": 6.408,
+        "min_ms": 0,
+        "p50_ms": 3.276,
+        "p90_ms": 10.785,
+        "p95_ms": 31.369,
+        "p99_ms": 53.533,
+        "max_ms": 204.923
+      },
+      "page_hit_rate_pct": 91.4,
+      "card_hit_rate_pct": 91.4,
+      "stat_hit_rate_pct": 91.4,
+      "mysql_status_delta": {
+        "Com_insert": 0,
+        "Com_select": 20122,
+        "Com_update": 0,
+        "Handler_read_key": 301838,
+        "Handler_read_next": 0,
+        "Innodb_row_lock_time": 0,
+        "Innodb_row_lock_waits": 0,
+        "Innodb_rows_updated": 0
+      }
+    },
+    {
+      "mode": "id_detail_separated_cache",
+      "read_stats": {
+        "count": 152811,
+        "errors": 0,
+        "elapsed_sec": 15.0024,
+        "qps": 10185.74,
+        "avg_ms": 4.902,
+        "min_ms": 0,
+        "p50_ms": 4.716,
+        "p90_ms": 6.859,
+        "p95_ms": 7.62,
+        "p99_ms": 9.407,
+        "max_ms": 20.498
+      },
+      "page_hit_rate_pct": 0,
+      "card_hit_rate_pct": 100,
+      "stat_hit_rate_pct": 100,
+      "mysql_status_delta": {
+        "Com_insert": 0,
+        "Com_select": 0,
+        "Com_update": 0,
+        "Handler_read_key": 8,
+        "Handler_read_next": 0,
+        "Innodb_row_lock_time": 0,
+        "Innodb_row_lock_waits": 0,
+        "Innodb_rows_updated": 0
+      }
+    }
+  ]
+}

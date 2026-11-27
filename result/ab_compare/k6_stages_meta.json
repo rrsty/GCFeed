@@ -1,0 +1,161 @@
+﻿[
+    {
+        "stage":  "stage_a_sync",
+        "mode":  "sync",
+        "vus":  50,
+        "k6_exit_code":  0,
+        "bench_stats":  {
+                            "db_active_rows":  31,
+                            "db_like_count":  31,
+                            "mode":  "sync",
+                            "queue_depth":  -1,
+                            "redis_v1_json":  "",
+                            "redis_v2_like":  "",
+                            "video_id":  49990,
+                            "worker_flush_calls":  0,
+                            "worker_record_calls":  0
+                        },
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  10462,
+                           "Innodb_row_lock_time":  951769,
+                           "Com_select":  21129,
+                           "Innodb_row_lock_waits":  5230,
+                           "Com_update":  10462
+                       }
+    },
+    {
+        "stage":  "stage_a_sync",
+        "mode":  "sync",
+        "vus":  100,
+        "k6_exit_code":  0,
+        "bench_stats":  {
+                            "db_active_rows":  47,
+                            "db_like_count":  47,
+                            "mode":  "sync",
+                            "queue_depth":  -1,
+                            "redis_v1_json":  "",
+                            "redis_v2_like":  "",
+                            "video_id":  49990,
+                            "worker_flush_calls":  0,
+                            "worker_record_calls":  0
+                        },
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  10718,
+                           "Innodb_row_lock_time":  960519,
+                           "Com_select":  21641,
+                           "Innodb_row_lock_waits":  5358,
+                           "Com_update":  10718
+                       }
+    },
+    {
+        "stage":  "stage_b_watch",
+        "mode":  "legacy-watch",
+        "vus":  50,
+        "k6_exit_code":  0,
+        "bench_stats":  {
+                            "db_active_rows":  33,
+                            "db_like_count":  33,
+                            "mode":  "legacy-watch",
+                            "queue_depth":  1349,
+                            "redis_v1_json":  "",
+                            "redis_v2_like":  "",
+                            "video_id":  49990,
+                            "worker_flush_calls":  6166,
+                            "worker_record_calls":  6166
+                        },
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  12348,
+                           "Innodb_row_lock_time":  0,
+                           "Com_select":  26430,
+                           "Innodb_row_lock_waits":  0,
+                           "Com_update":  12348
+                       }
+    },
+    {
+        "stage":  "stage_b_watch",
+        "mode":  "legacy-watch",
+        "vus":  100,
+        "k6_exit_code":  0,
+        "bench_stats":  {
+                            "db_active_rows":  66,
+                            "db_like_count":  66,
+                            "mode":  "legacy-watch",
+                            "queue_depth":  0,
+                            "redis_v1_json":  "",
+                            "redis_v2_like":  "",
+                            "video_id":  49990,
+                            "worker_flush_calls":  10028,
+                            "worker_record_calls":  10028
+                        },
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  7531,
+                           "Innodb_row_lock_time":  0,
+                           "Com_select":  14415,
+                           "Innodb_row_lock_waits":  0,
+                           "Com_update":  7531
+                       }
+    },
+    {
+        "stage":  "stage_c_lua",
+        "mode":  "lua-batch",
+        "vus":  50,
+        "k6_exit_code":  0,
+        "bench_stats":  {
+                            "db_active_rows":  34,
+                            "db_like_count":  34,
+                            "mode":  "lua-batch",
+                            "queue_depth":  0,
+                            "redis_v1_json":  "",
+                            "redis_v2_like":  "34",
+                            "video_id":  49990,
+                            "worker_flush_calls":  181,
+                            "worker_record_calls":  2538
+                        },
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  2719,
+                           "Innodb_row_lock_time":  0,
+                           "Com_select":  7929,
+                           "Innodb_row_lock_waits":  0,
+                           "Com_update":  2719
+                       }
+    },
+    {
+        "stage":  "stage_c_lua",
+        "mode":  "lua-batch",
+        "vus":  100,
+        "k6_exit_code":  0,
+        "bench_stats":  {
+                            "db_active_rows":  70,
+                            "db_like_count":  58,
+                            "mode":  "lua-batch",
+                            "queue_depth":  0,
+                            "redis_v1_json":  "",
+                            "redis_v2_like":  "70",
+                            "video_id":  49990,
+                            "worker_flush_calls":  364,
+                            "worker_record_calls":  5008
+                        },
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  2654,
+                           "Innodb_row_lock_time":  0,
+                           "Com_select":  7771,
+                           "Innodb_row_lock_waits":  0,
+                           "Com_update":  2654
+                       }
+    },
+    {
+        "stage":  "docker_live_api",
+        "mode":  "docker_lua_batch_with_notify",
+        "vus":  50,
+        "k6_exit_code":  0,
+        "docker_verify_db":  "27\t32",
+        "docker_verify_redis_v2":  "7",
+        "mysql_diff":  {
+                           "Innodb_rows_updated":  1743,
+                           "Innodb_row_lock_time":  1,
+                           "Com_select":  8950,
+                           "Innodb_row_lock_waits":  31,
+                           "Com_update":  1743
+                       }
+    }
+]

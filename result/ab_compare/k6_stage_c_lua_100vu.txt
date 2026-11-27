@@ -1,0 +1,140 @@
+﻿
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: c:\Users\rsty\Desktop\02_工程与科研代码\gofeed\GCFeed\tests\k6\like_write_test.js
+        output: -
+
+     scenarios: (100.00%) 1 scenario, 100 max VUs, 50s max duration (incl. graceful stop):
+              * default: 100 looping VUs for 20s (gracefulStop: 30s)
+
+
+Run       [ 100% ] setup()
+default   [   0% ]
+
+Run       [ 100% ] setup()
+default   [   0% ]
+
+Run       [ 100% ] setup()
+default   [   0% ]
+
+Run       [ 100% ] setup()
+default   [   0% ]
+
+Run       [ 100% ] setup()
+default   [   0% ]
+
+Run       [ 100% ] setup()
+default   [   0% ]
+
+running (07.0s), 100/100 VUs, 47 complete and 0 interrupted iterations
+default   [   2% ] 100 VUs  00.5s/20s
+
+running (08.0s), 100/100 VUs, 164 complete and 0 interrupted iterations
+default   [   7% ] 100 VUs  01.5s/20s
+
+running (09.0s), 100/100 VUs, 288 complete and 0 interrupted iterations
+default   [  12% ] 100 VUs  02.5s/20s
+
+running (10.0s), 100/100 VUs, 410 complete and 0 interrupted iterations
+default   [  17% ] 100 VUs  03.5s/20s
+
+running (11.0s), 100/100 VUs, 529 complete and 0 interrupted iterations
+default   [  22% ] 100 VUs  04.5s/20s
+
+running (12.0s), 100/100 VUs, 649 complete and 0 interrupted iterations
+default   [  27% ] 100 VUs  05.5s/20s
+
+running (13.0s), 100/100 VUs, 767 complete and 0 interrupted iterations
+default   [  32% ] 100 VUs  06.5s/20s
+
+running (14.0s), 100/100 VUs, 889 complete and 0 interrupted iterations
+default   [  37% ] 100 VUs  07.5s/20s
+
+running (15.0s), 100/100 VUs, 993 complete and 0 interrupted iterations
+default   [  42% ] 100 VUs  08.5s/20s
+
+running (16.0s), 100/100 VUs, 1099 complete and 0 interrupted iterations
+default   [  47% ] 100 VUs  09.5s/20s
+
+running (17.0s), 100/100 VUs, 1214 complete and 0 interrupted iterations
+default   [  52% ] 100 VUs  10.5s/20s
+
+running (18.0s), 100/100 VUs, 1335 complete and 0 interrupted iterations
+default   [  57% ] 100 VUs  11.5s/20s
+
+running (19.0s), 100/100 VUs, 1452 complete and 0 interrupted iterations
+default   [  62% ] 100 VUs  12.5s/20s
+
+running (20.0s), 100/100 VUs, 1569 complete and 0 interrupted iterations
+default   [  67% ] 100 VUs  13.5s/20s
+
+running (21.0s), 100/100 VUs, 1694 complete and 0 interrupted iterations
+default   [  72% ] 100 VUs  14.5s/20s
+
+running (22.0s), 100/100 VUs, 1820 complete and 0 interrupted iterations
+default   [  77% ] 100 VUs  15.5s/20s
+
+running (23.0s), 100/100 VUs, 1944 complete and 0 interrupted iterations
+default   [  82% ] 100 VUs  16.5s/20s
+
+running (24.0s), 100/100 VUs, 2063 complete and 0 interrupted iterations
+default   [  87% ] 100 VUs  17.5s/20s
+
+running (25.0s), 100/100 VUs, 2188 complete and 0 interrupted iterations
+default   [  92% ] 100 VUs  18.5s/20s
+
+running (26.0s), 100/100 VUs, 2308 complete and 0 interrupted iterations
+default   [  97% ] 100 VUs  19.5s/20s
+
+running (27.0s), 047/100 VUs, 2423 complete and 0 interrupted iterations
+default ↓ [ 100% ] 100 VUs  20s
+
+
+  █ THRESHOLDS 
+
+    http_req_failed
+    ✓ 'rate<0.05' rate=0.00%
+
+    like_success_rate
+    ✓ 'rate>0.95' rate=100.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 4940    180.496995/s
+    checks_succeeded...: 100.00% 4940 out of 4940
+    checks_failed......: 0.00%   0 out of 4940
+
+    ✓ status is 200
+    ✓ has like_count
+
+    CUSTOM
+    like_success_rate..............: 100.00% 2470 out of 2470
+
+    HTTP
+    http_req_duration..............: avg=796.67ms min=35.9ms  med=833.84ms max=1.05s p(90)=871.02ms p(95)=902.23ms
+      { expected_response:true }...: avg=796.67ms min=35.9ms  med=833.84ms max=1.05s p(90)=871.02ms p(95)=902.23ms
+    http_req_failed................: 0.00%   0 out of 2570
+    http_reqs......................: 2570    93.902283/s
+
+    EXECUTION
+    iteration_duration.............: avg=826.65ms min=37.63ms med=835.48ms max=1.05s p(90)=874.46ms p(95)=908.83ms
+    iterations.....................: 2470    90.248497/s
+    vus............................: 47      min=0            max=100
+    vus_max........................: 100     min=100          max=100
+
+    NETWORK
+    data_received..................: 573 kB  21 kB/s
+    data_sent......................: 998 kB  37 kB/s
+
+
+
+
+running (27.4s), 000/100 VUs, 2470 complete and 0 interrupted iterations
+default ✓ [ 100% ] 100 VUs  20s
